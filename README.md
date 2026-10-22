@@ -1,36 +1,77 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 📚 EnLearn — 영어 문장 연습
 
-## Getting Started
+AI(LLM)가 **점수(0~100) + 피드백 + 더 좋은 표현**을 제안해주는 영어 학습 웹앱입니다.
 
-First, run the development server:
+## ✨ 기능
+
+### 1. ✍️ 자유 작성
+- 영어 문장을 입력하면 LLM이 평가합니다.
+- 점수 게이지, 피드백, `원래 표현 → 개선 표현` 목록, 다듬은 전체 문장을 보여줍니다.
+
+### 2. 📝 번역 연습
+- 난이도(쉬움/보통/어려움)를 선택해 LLM이 **한국어 문장**을 만들어줍니다.
+- 사용자가 영어로 번역하면 점수 + **참고 번역** + 피드백 + 더 좋은 표현을 받습니다.
+
+### 3. ⚙️ 설정
+- **Host** (예: `https://api.openai.com/v1`), **Model**, **API Key**
+- 브라우저 `localStorage`에만 저장됩니다 (백엔드 없음, 서버로 전송되지 않음)
+- **연결 테스트** 버튼으로 설정 확인 가능
+
+## 🏗️ 기술 스택
+
+| 구분 | 기술 |
+| --- | --- |
+| 프레임워크 | Next.js 16 (App Router, React 19) |
+| 스타일 | Tailwind CSS v4 |
+| 테스트 | Vitest 5 + Testing Library (jsdom) |
+| 언어 | TypeScript |
+
+## 🔌 LLM 연동 방식
+
+- **OpenAI 호환 `/chat/completions` API**를 사용하므로 OpenAI 외 OpenRouter, Ollama, Groq, Together 등 어떤 호스트든 설정 가능합니다.
+- LLM 응답은 **구조화된 JSON**으로 요구한 뒤 **방어적으로 파싱**합니다 (코드펜스 제거, JSON 앞뒤 텍스트 제거, 점수 0~100 클램핑, 누락 필드 기본값 보완, `corrections` 배열의 다양한 키/형식 정규화).
+- LLM 호출은 **브라우저에서 직접 fetch**합니다. API 키는 브라우저에만 존재하지만, **CORS를 지원하는 호스트**가 필요합니다.
+  - 로컬 Ollama 사용 시: `OLLAMA_ORIGINS="*" ollama serve`
+- Host 정규화: `https://api.openai.com` → `.../v1/chat/completions`, `.../v1/` → trailing slash 제거 등 자동 처리.
+
+## 🚀 실행
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev        # 개발 서버 (http://localhost:3000)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## ✅ 테스트
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm test           # vitest run (45개 테스트)
+npm run test:watch # watch 모드
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+테스트 범위:
 
-## Learn More
+- `src/lib/__tests__/parse.test.ts` — LLM 응답 방어적 JSON 파싱
+- `src/lib/__tests__/llm.test.ts` — OpenAI 호환 요청/응답 처리, 오류 케이스 (fetch mock)
+- `src/lib/__tests__/settings.test.ts` — localStorage 설정 로드/저장, useSyncExternalStore 스냅샷
+- `src/components/__tests__/*` — 점수 게이지, 평가 카드 렌더링
 
-To learn more about Next.js, take a look at the following resources:
+## 📁 구조
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+src/
+├── app/
+│   ├── layout.tsx          # 루트 레이아웃 + 메타데이터
+│   ├── page.tsx            # 탭 셸 (useSyncExternalStore로 설정 구독)
+│   └── globals.css         # Tailwind v4 (CSS-first)
+├── components/
+│   ├── free-writing-tab.tsx    # ✍️ 자유 작성
+│   ├── translation-tab.tsx     # 📝 번역 연습
+│   ├── settings-tab.tsx        # ⚙️ 설정 + 연결 테스트
+│   ├── evaluation-card.tsx     # 점수/피드백/개선안 공통 결과 카드
+│   └── score-gauge.tsx         # SVG 원형 점수 게이지
+└── lib/
+    ├── llm.ts              # OpenAI 호환 API 클라이언트 + 프롬프트
+    ├── parse.ts            # LLM 응답 방어적 JSON 파싱
+    ├── settings.ts         # localStorage 설정 + 외부 스토어 구독
+    └── types.ts            # 공용 타입
+```

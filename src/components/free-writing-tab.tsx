@@ -1,0 +1,107 @@
+"use client";
+
+import { useState } from "react";
+import type { LLMSettings, EvaluationResult } from "@/lib/types";
+import { isSettingsComplete } from "@/lib/settings";
+import { evaluateFreeWriting } from "@/lib/llm";
+import EvaluationCard from "./evaluation-card";
+
+interface FreeWritingTabProps {
+  settings: LLMSettings;
+  onGoSettings: () => void;
+}
+
+/** ✍️ 자유 작성: 영어 문장을 입력하면 LLM이 점수 + 피드백 + 개선안을 반환 */
+export default function FreeWritingTab({
+  settings,
+  onGoSettings,
+}: FreeWritingTabProps) {
+  const [sentence, setSentence] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<EvaluationResult | null>(null);
+
+  const canSubmit =
+    isSettingsComplete(settings) && sentence.trim().length > 0 && !loading;
+
+  async function handleSubmit() {
+    setLoading(true);
+    setError(null);
+    try {
+      setResult(await evaluateFreeWriting(settings, sentence.trim()));
+    } catch (e) {
+      setResult(null);
+      setError(e instanceof Error ? e.message : "평가 중 오류가 발생했습니다.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <label
+          htmlFor="free-sentence"
+          className="mb-2 block text-sm font-semibold text-slate-700"
+        >
+          영문으로 문장을 작성해보세요
+        </label>
+        <textarea
+          id="free-sentence"
+          value={sentence}
+          onChange={(e) => setSentence(e.target.value)}
+          rows={4}
+          placeholder="예: Yesterday I go to the park with my friends."
+          className="w-full resize-y rounded-xl border border-slate-300 p-3 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
+        />
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <span className="text-xs text-slate-400">
+            {sentence.trim() ? `${sentence.trim().length}자 입력됨` : "문장을 입력하세요"}
+          </span>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            {loading ? "평가 중..." : "점수 받기"}
+          </button>
+        </div>
+      </div>
+
+      {!isSettingsComplete(settings) && (
+        <SettingsWarning onGoSettings={onGoSettings} />
+      )}
+
+      {error && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          <strong>오류:</strong> {error}
+        </div>
+      )}
+
+      {loading && (
+        <div className="flex items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white p-8 text-sm text-slate-500">
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
+          LLM이 문장을 평가하고 있어요...
+        </div>
+      )}
+
+      {!loading && result && <EvaluationCard result={result} />}
+    </div>
+  );
+}
+
+export function SettingsWarning({ onGoSettings }: { onGoSettings: () => void }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+      <span>LLM 설정이 아직 완성되지 않았어요.</span>
+      <button
+        type="button"
+        onClick={onGoSettings}
+        className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-600"
+      >
+        설정하러 가기
+      </button>
+    </div>
+  );
+}
