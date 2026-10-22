@@ -14,13 +14,23 @@ const settings: LLMSettings = {
   apiKey: "sk-test",
 };
 
-function mockFetchOk(content: unknown) {
+function mockFetchOk(
+  content: unknown,
+  opts: { contentType?: string; body?: string } = {},
+) {
+  const body = opts.body ?? JSON.stringify(content);
   const fetchMock = vi.fn().mockResolvedValue({
     ok: true,
     status: 200,
     statusText: "OK",
-    json: async () => content,
-    text: async () => JSON.stringify(content),
+    headers: {
+      get: (name: string) =>
+        name.toLowerCase() === "content-type"
+          ? (opts.contentType ?? "application/json")
+          : null,
+    },
+    json: async () => JSON.parse(body),
+    text: async () => body,
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
@@ -97,11 +107,56 @@ describe("chatCompletion", () => {
     ).rejects.toThrow(/연결할 수 없습니다/);
   });
 
-  it("content가 누락된 응답이면 에러를 던진다", async () => {
-    mockFetchOk({ choices: [] });
+  it("content가 누락된 응답이면 실제 응답 앞부분이 포함된 에러를 던진다", async () => {
+    mockFetchOk({ choices: [] }, { body: '{"foo":1}' });
     await expect(
       chatCompletion(settings, [{ role: "user", content: "hi" }]),
-    ).rejects.toThrow(/choices\[0\].message.content/);
+    ).rejects.toThrow(/콘텐츠\(content\)를 찾을 수 없습니다/);
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }]),
+    ).rejects.toThrow(/\{"foo":1\}/);
+  });
+
+  it("SSE 스트림(content-type: event-stream) 응답에서 delta를 조합해 반환한다", async () => {
+    const sseBody = [
+      'data: {"choices":[{"delta":{"content":"ok"}}]}',
+      'data: {"choices":[{"delta":{"content":"!"}}]}',
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    mockFetchOk(null, { body: sseBody, contentType: "text/event-stream" });
+    const out = await chatCompletion(settings, [
+      { role: "user", content: "hi" },
+    ]);
+    expect(out).toBe("ok!");
+  });
+
+  it("content-type이 application/json인데 본문이 SSE여도 폴백으로 파싱한다", async () => {
+    const sseBody = [
+      'data: {"choices":[{"delta":{"content":"안녕"}}]}',
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    mockFetchOk(null, { body: sseBody });
+    const out = await chatCompletion(settings, [
+      { role: "user", content: "hi" },
+    ]);
+    expect(out).toBe("안녕");
+  });
+
+  it("레거시 choices[0].text 형식도 지원한다", async () => {
+    mockFetchOk({ choices: [{ text: "legacy answer" }] });
+    const out = await chatCompletion(settings, [
+      { role: "user", content: "hi" },
+    ]);
+    expect(out).toBe("legacy answer");
+  });
+
+  it("빈 본문이면 에러 메시지에 (빈 응답)을 표시한다", async () => {
+    mockFetchOk(null, { body: "" });
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }]),
+    ).rejects.toThrow(/\(빈 응답\)/);
   });
 });
 

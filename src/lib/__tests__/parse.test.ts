@@ -95,6 +95,50 @@ describe("parseEvaluation", () => {
   });
 });
 
+describe("parseEvaluation (평문 폴백)", () => {
+  it("JSON 지시를 무시한 평문 응답도 feedback으로 살린다", () => {
+    const raw =
+      "Your sentence is quite good. The grammar is mostly correct, but you should use past tense.";
+    const r = parseEvaluation(raw);
+    expect(r.feedback).toBe(raw);
+    expect(r.score).toBe(0);
+    expect(r.corrections).toEqual([]);
+  });
+
+  it("평문 안에 점수처럼 보이는 값이면 추출한다", () => {
+    const r = parseEvaluation("Overall it is fine. Score: 72\nGood job.");
+    expect(r.score).toBe(72);
+    expect(r.feedback).toContain("Good job.");
+  });
+
+  it("점수처럼 보이는 숫자가 없으면 0점", () => {
+    const r = parseEvaluation("안녕하세요, 도움이 필요하신가요?");
+    expect(r.score).toBe(0);
+  });
+
+  it("100을 초과하는 숫자는 점수로 취급하지 않는다", () => {
+    const r = parseEvaluation("I give it 999 points out of 100.");
+    expect(r.score).toBe(0);
+  });
+});
+
+describe("parseSentence (평문 폴백)", () => {
+  it("JSON 없이 평문 문장을 반환하면 첫 줄을 문장으로 사용한다", () => {
+    expect(parseSentence("어제 공원에 갔다.")).toBe("어제 공원에 갔다.");
+  });
+
+  it("'문장:' 같은 접두사는 제거한다", () => {
+    expect(parseSentence("문장: 오늘 날씨가 좋네요.")).toBe("오늘 날씨가 좋네요.");
+    expect(parseSentence("Sentence: The weather is nice today.")).toBe(
+      "The weather is nice today.",
+    );
+  });
+
+  it("여러 줄이면 라벨 줄은 건너뛰고 첫 실제 문장 줄을 사용한다", () => {
+    expect(parseSentence("문장입니다:\n밥을 먹었어요.\n끝.")).toBe("밥을 먹었어요.");
+  });
+});
+
 describe("parseSentence", () => {
   it("sentence 필드를 반환한다", () => {
     expect(parseSentence('{"sentence": "어제 공원에 갔다."}')).toBe(

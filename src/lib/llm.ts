@@ -21,6 +21,58 @@ export function buildEndpoint(host: string): string {
   return `${base}/v1/chat/completions`;
 }
 
+/** JSON 응답에서 콘텐츠 문자열을 추출한다. (호환 호스트별 형식 차이 대응) */
+function extractContentFromJson(data: unknown): string | null {
+  if (typeof data !== "object" || data === null) return null;
+  const choices = (data as { choices?: unknown }).choices;
+  if (!Array.isArray(choices)) return null;
+  const first = choices[0];
+  if (typeof first !== "object" || first === null) return null;
+  const c = first as { message?: unknown; text?: unknown; delta?: unknown };
+  // 1) 표준: choices[0].message.content (문자열)
+  if (
+    typeof c.message === "object" &&
+    c.message !== null &&
+    typeof (c.message as { content?: unknown }).content === "string" &&
+    (c.message as { content: string }).content.trim()
+  ) {
+    return (c.message as { content: string }).content;
+  }
+  // 2) choices[0].message 자체가 문자열
+  if (typeof c.message === "string" && c.message.trim()) return c.message;
+  // 3) 스트림 조각: choices[0].delta.content
+  if (
+    typeof c.delta === "object" &&
+    c.delta !== null &&
+    typeof (c.delta as { content?: unknown }).content === "string" &&
+    (c.delta as { content: string }).content
+  ) {
+    return (c.delta as { content: string }).content;
+  }
+  // 4) 레거시 completions 형식: choices[0].text
+  if (typeof c.text === "string" && c.text.trim()) return c.text;
+  return null;
+}
+
+/** SSE(stream) 응답에서 delta 콘텐츠 조각들을 조합해 추출한다. */
+function extractContentFromSse(body: string): string | null {
+  let acc = "";
+  for (const line of body.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t.startsWith("data:")) continue;
+    const payload = t.slice(5).trim();
+    if (payload === "[DONE]") break;
+    try {
+      const data: unknown = JSON.parse(payload);
+      const content = extractContentFromJson(data);
+      if (content) acc += content;
+    } catch {
+      // 파싱 안 되는 조각은 건너뜀
+    }
+  }
+  return acc.trim() ? acc : null;
+}
+
 /** OpenAI 호환 /chat/completions API를 호출해 응답 본문(content)을 반환한다. */
 export async function chatCompletion(
   settings: LLMSettings,
@@ -55,13 +107,31 @@ export async function chatCompletion(
     throw new Error(`HTTP ${res.status} ${res.statusText}${detail}`);
   }
 
-  const data = (await res.json().catch(() => null)) as {
-    choices?: { message?: { content?: unknown } }[];
-  } | null;
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || !content.trim()) {
+  // 본문을 먼저 텍스트로 받아 형식을 직접 판별한다.
+  // (res.json()은 SSE/비JSON 본문에서 실패해 원인을 숨기므로)
+  const body = await res.text().catch(() => "");
+  const contentType = res.headers.get("content-type") ?? "";
+
+  let content: string | null = null;
+  if (contentType.includes("event-stream")) {
+    // 호스트가 stream: false를 무시하고 SSE 스트림을 반환하는 경우
+    content = extractContentFromSse(body);
+  } else {
+    try {
+      content = extractContentFromJson(JSON.parse(body));
+    } catch {
+      content = null;
+    }
+    // JSON이 아니거나 구조가 맞지 않으면 SSE로 마지막 시도
+    if (content === null) {
+      content = extractContentFromSse(body);
+    }
+  }
+
+  if (!content) {
+    const snippet = body.trim().slice(0, 300) || "(빈 응답)";
     throw new Error(
-      "LLM 응답 형식이 올바르지 않습니다. (choices[0].message.content 누락)",
+      `LLM 응답에서 콘텐츠(content)를 찾을 수 없습니다. 실제 응답 앞부분: ${snippet}`,
     );
   }
   return content;

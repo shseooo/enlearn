@@ -170,9 +170,9 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
           <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
             <strong>연결 실패:</strong> {test.message}
             <p className="mt-1 text-xs text-rose-500">
-              대부분의 원인은 잘못된 Host/Model/API Key 또는 CORS 비지원
-              호스트입니다. (로컬 서버는 Ollama의 OLLAMA_ORIGINS 환경변수로
-              CORS를 허용해야 합니다)
+              대부분의 원인은 잘못된 Host/Model/API Key, 호스트의 CORS 비지원,
+              또는 OpenAI 호환이 아닌 응답 형식입니다. 에러 메시지에 표시되는
+              실제 응답 내용을 확인해 보세요.
             </p>
           </div>
         )}
