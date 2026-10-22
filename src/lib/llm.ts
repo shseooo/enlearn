@@ -1,6 +1,8 @@
 import type {
   Difficulty,
+  EvaluationContext,
   EvaluationResult,
+  FollowUpTurn,
   KoreanExercise,
   LLMSettings,
 } from "./types";
@@ -270,6 +272,70 @@ export async function testConnection(settings: LLMSettings): Promise<string> {
     settings,
     [{ role: "user", content: "연결 테스트입니다. ok만 답해 주세요." }],
     { temperature: 0, maxTokens: 64 },
+  );
+  return raw.trim();
+}
+
+/**
+ * 평가 결과에 대한 추가 질문을 LLM에 던져 답을 받는다.
+ * 원문/답안 + 평가 결과 + 이전 질의응답을 컨텍스트로 함께 보낸다.
+ * 답변은 순수 텍스트(피드백은 평문으로 충분)로 받는다.
+ */
+export async function askFollowUp(
+  settings: LLMSettings,
+  context: EvaluationContext,
+  result: EvaluationResult,
+  question: string,
+  history: FollowUpTurn[] = [],
+): Promise<string> {
+  const contextLines: string[] = [];
+  if (context.original) contextLines.push(`사용자 원문: """${context.original}"""`);
+  if (context.answer) contextLines.push(`사용자의 영어 답안: """${context.answer}"""`);
+
+  const evalJson = JSON.stringify(
+    {
+      score: result.score,
+      feedback: result.feedback,
+      corrections: result.corrections,
+      betterExpression: result.betterExpression,
+      ...(result.referenceTranslation
+        ? { referenceTranslation: result.referenceTranslation }
+        : {}),
+    },
+    null,
+    2,
+  );
+
+  const historyLines = history.flatMap((h, i) => [
+    `질문 ${i + 1}: ${h.question}`,
+    `답변 ${i + 1}: ${h.answer}`,
+  ]);
+
+  const userContent = [
+    "평가 컨텍스트:",
+    ...contextLines,
+    "평가 결과(JSON):",
+    evalJson,
+    ...(historyLines.length ? ["", "이전 질의응답:", ...historyLines] : []),
+    "",
+    `새 질문: ${question}`,
+  ].join("\n");
+
+  const raw = await chatCompletion(
+    settings,
+    [
+      {
+        role: "system",
+        content: [
+          "너는 전문 영어 교육 교사다.",
+          "아래 평가 컨텍스트에 기반해 사용자의 추가 질문을 한국어로 친절하고 구체적으로 답해라.",
+          "문법 설명, 표현의 이유, 더 많은 예문, 학습 팁 등을 요청받을 수 있다.",
+          "답변은 읽기 쉽게 작성하고, 영어 예문은 그대로 인용해라.",
+        ].join("\n"),
+      },
+      { role: "user", content: userContent },
+    ],
+    { temperature: 0.4 },
   );
   return raw.trim();
 }

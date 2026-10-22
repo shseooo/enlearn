@@ -17,6 +17,7 @@ export default function FreeWritingTab({
   onGoSettings,
 }: FreeWritingTabProps) {
   const [sentence, setSentence] = useState("");
+  const [evaluatedSentence, setEvaluatedSentence] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<EvaluationResult | null>(null);
@@ -25,10 +26,13 @@ export default function FreeWritingTab({
     isSettingsComplete(settings) && sentence.trim().length > 0 && !loading;
 
   async function handleSubmit() {
+    const trimmed = sentence.trim();
     setLoading(true);
     setError(null);
     try {
-      setResult(await evaluateFreeWriting(settings, sentence.trim()));
+      const r = await evaluateFreeWriting(settings, trimmed);
+      setResult(r);
+      setEvaluatedSentence(trimmed);
     } catch (e) {
       setResult(null);
       setError(e instanceof Error ? e.message : "평가 중 오류가 발생했습니다.");
@@ -86,7 +90,13 @@ export default function FreeWritingTab({
         </div>
       )}
 
-      {!loading && result && <EvaluationCard result={result} />}
+      {!loading && result && (
+        <EvaluationCard
+          result={result}
+          settings={settings}
+          context={{ original: evaluatedSentence }}
+        />
+      )}
     </div>
   );
 }

@@ -33,3 +33,17 @@ export interface KoreanExercise {
   sentence: string;
   hints: string[];
 }
+
+/** 추가 질문 컨텍스트: 사용자의 원문/답안 */
+export interface EvaluationContext {
+  /** 자유 작성: 사용자가 쓴 영어 문장 / 번역 연습: 한국어 원문 */
+  original?: string;
+  /** 번역 연습: 사용자의 영어 번역 */
+  answer?: string;
+}
+
+/** 추가 질문 대화의 한 턴 */
+export interface FollowUpTurn {
+  question: string;
+  answer: string;
+}

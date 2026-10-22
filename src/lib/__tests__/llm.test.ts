@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildEndpoint,
+  askFollowUp,
   chatCompletion,
   evaluateFreeWriting,
   generateKoreanExercise,
@@ -293,5 +294,66 @@ describe("testConnection", () => {
     const [, init] = m.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string);
     expect(body.max_tokens).toBe(64);
+  });
+});
+
+describe("askFollowUp", () => {
+  const result = {
+    score: 70,
+    feedback: "전반적으로 좋아요.",
+    corrections: [{ original: "goed", better: "went", reason: "과거형" }],
+    betterExpression: "I went to the park.",
+  };
+
+  function getUserContent(fetchMock: ReturnType<typeof vi.fn>): string {
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    const userMsg = body.messages.find(
+      (msg: { role: string }) => msg.role === "user",
+    ) as { content: string };
+    return userMsg.content;
+  }
+
+  it("원문과 평가 결과를 컨텍스트로 포함해 요청한다", async () => {
+    const m = mockFetchOk({
+      choices: [{ message: { content: "went는 과거형이에요." } }],
+    });
+    const reply = await askFollowUp(
+      settings,
+      { original: "I goed to the park.", answer: "I goed." },
+      result,
+      "왜 went인가요?",
+    );
+    expect(reply).toBe("went는 과거형이에요.");
+    const content = getUserContent(m);
+    expect(content).toContain("I goed to the park.");
+    expect(content).toContain("I goed.");
+    expect(content).toContain("왜 went인가요?");
+    expect(content).toContain("went"); // 평가 결과 반영
+  });
+
+  it("이전 질의응답이 있으면 히스토리로 포함한다", async () => {
+    const m = mockFetchOk({ choices: [{ message: { content: "답변" } }] });
+    await askFollowUp(
+      settings,
+      { original: "I goed." },
+      result,
+      "새 질문",
+      [{ question: "첫 질문", answer: "첫 답변" }],
+    );
+    const content = getUserContent(m);
+    expect(content).toContain("첫 질문");
+    expect(content).toContain("첫 답변");
+  });
+
+  it("LLM 응답을 잘라서 반환한다", async () => {
+    mockFetchOk({ choices: [{ message: { content: "  답변 본문  " } }] });
+    const reply = await askFollowUp(
+      settings,
+      { original: "x" },
+      result,
+      "q",
+    );
+    expect(reply).toBe("답변 본문");
   });
 });

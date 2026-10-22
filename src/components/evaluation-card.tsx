@@ -1,7 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import type { EvaluationResult } from "@/lib/types";
+import type {
+  EvaluationContext,
+  EvaluationResult,
+  FollowUpTurn,
+  LLMSettings,
+} from "@/lib/types";
+import { isSettingsComplete } from "@/lib/settings";
+import { askFollowUp } from "@/lib/llm";
 import ScoreGauge, { scoreVerdict } from "./score-gauge";
 
 function CopyButton({ text }: { text: string }) {
@@ -28,8 +35,39 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-/** LLM 평가 결과를 카드 형태로 표시한다. */
-export default function EvaluationCard({ result }: { result: EvaluationResult }) {
+/** LLM 평가 결과를 카드 형태로 표시한다. (추가 질문 포함) */
+export default function EvaluationCard({
+  result,
+  settings,
+  context,
+}: {
+  result: EvaluationResult;
+  settings: LLMSettings;
+  context: EvaluationContext;
+}) {
+  const [history, setHistory] = useState<FollowUpTurn[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canAsk = isSettingsComplete(settings) && input.trim().length > 0 && !loading;
+
+  async function handleSubmit() {
+    const question = input.trim();
+    if (!question) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const answer = await askFollowUp(settings, context, result, question, history);
+      setHistory((h) => [...h, { question, answer }]);
+      setInput("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "질문 처리 중 오류가 발생했습니다.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex items-center gap-5">
@@ -69,9 +107,7 @@ export default function EvaluationCard({ result }: { result: EvaluationResult })
                     </>
                   )}
                 </div>
-                {c.reason && (
-                  <p className="mt-1 text-slate-500">{c.reason}</p>
-                )}
+                {c.reason && <p className="mt-1 text-slate-500">{c.reason}</p>}
               </li>
             ))}
           </ul>
@@ -102,6 +138,56 @@ export default function EvaluationCard({ result }: { result: EvaluationResult })
           </p>
         </div>
       )}
+
+      <div className="border-t border-slate-100 pt-4">
+        <h3 className="mb-2 text-sm font-semibold text-slate-700">
+          💬 결과에 대해 추가 질문하기
+        </h3>
+
+        {history.length > 0 && (
+          <div className="mb-3 space-y-3">
+            {history.map((f, i) => (
+              <div key={i} className="space-y-1 text-sm">
+                <p className="font-medium text-indigo-700">Q. {f.question}</p>
+                <p className="whitespace-pre-wrap leading-relaxed text-slate-700">
+                  {f.answer}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {error && (
+          <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+            <strong>오류:</strong> {error}
+          </div>
+        )}
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleSubmit();
+          }}
+          className="flex gap-2"
+        >
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="예: 'went' 말고 비슷한 표현이 있을까요? / 왜 과거형이 필요한가요?"
+            aria-label="추가 질문"
+            disabled={loading}
+            className="w-full rounded-xl border border-slate-300 p-3 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 disabled:bg-slate-50"
+          />
+          <button
+            type="submit"
+            disabled={!canAsk}
+            className="shrink-0 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            {loading ? "답변 중..." : "질문하기"}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

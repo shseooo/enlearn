@@ -11,6 +11,7 @@ const { generateKoreanExerciseMock, evaluateTranslationMock } = vi.hoisted(() =>
 vi.mock("@/lib/llm", () => ({
   generateKoreanExercise: generateKoreanExerciseMock,
   evaluateTranslation: evaluateTranslationMock,
+  askFollowUp: vi.fn(),
   DIFFICULTY_LABELS: {
     easy: "쉬움 — 기본 시제",
     normal: "보통 — 관용 표현",

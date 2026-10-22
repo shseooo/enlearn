@@ -29,6 +29,10 @@ export default function TranslationTab({
   const [difficulty, setDifficulty] = useState<Difficulty>("normal");
   const [topic, setTopic] = useState("");
   const [exercise, setExercise] = useState<KoreanExercise | null>(null);
+  const [evaluated, setEvaluated] = useState<{
+    korean: string;
+    english: string;
+  } | null>(null);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [answer, setAnswer] = useState("");
@@ -52,6 +56,7 @@ export default function TranslationTab({
       const next = await generateKoreanExercise(settings, difficulty, topic);
       setExercise(next);
       setAnswer("");
+      setEvaluated(null);
     } catch (e) {
       setExercise(null);
       setGenError(
@@ -64,12 +69,13 @@ export default function TranslationTab({
 
   async function handleEvaluate() {
     if (!exercise) return;
+    const english = answer.trim();
     setLoading(true);
     setError(null);
     try {
-      setResult(
-        await evaluateTranslation(settings, exercise.sentence, answer.trim()),
-      );
+      const r = await evaluateTranslation(settings, exercise.sentence, english);
+      setResult(r);
+      setEvaluated({ korean: exercise.sentence, english });
     } catch (e) {
       setResult(null);
       setError(e instanceof Error ? e.message : "평가 중 오류가 발생했습니다.");
@@ -212,7 +218,13 @@ export default function TranslationTab({
         </div>
       )}
 
-      {!loading && result && <EvaluationCard result={result} />}
+      {!loading && result && evaluated && (
+        <EvaluationCard
+          result={result}
+          settings={settings}
+          context={{ original: evaluated.korean, answer: evaluated.english }}
+        />
+      )}
     </div>
   );
 }
