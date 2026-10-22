@@ -28,7 +28,11 @@ function extractContentFromJson(data: unknown): string | null {
   if (!Array.isArray(choices)) return null;
   const first = choices[0];
   if (typeof first !== "object" || first === null) return null;
-  const c = first as { message?: unknown; text?: unknown; delta?: unknown };
+  const c = first as {
+    message?: unknown;
+    text?: unknown;
+    delta?: unknown;
+  };
   // 1) 표준: choices[0].message.content (문자열)
   if (
     typeof c.message === "object" &&
@@ -51,6 +55,17 @@ function extractContentFromJson(data: unknown): string | null {
   }
   // 4) 레거시 completions 형식: choices[0].text
   if (typeof c.text === "string" && c.text.trim()) return c.text;
+  // 5) 추론(reasoning) 모델 폴백: content가 생성되지 않고 (예: finish_reason: "length")
+  //    생각 과정만 있는 경우 reasoning_content를 마지막 수단으로 사용
+  if (
+    typeof c.message === "object" &&
+    c.message !== null &&
+    typeof (c.message as { reasoning_content?: unknown }).reasoning_content ===
+      "string" &&
+    (c.message as { reasoning_content: string }).reasoning_content.trim()
+  ) {
+    return (c.message as { reasoning_content: string }).reasoning_content;
+  }
   return null;
 }
 
@@ -232,12 +247,13 @@ export async function generateKoreanSentence(
   return parseSentence(raw);
 }
 
-/** 설정 화면의 연결 테스트. 성공하면 LLM 응답 텍스트를 반환한다. */
+/** 설정 화면의 연결 테스트. 성공하면 LLM 응답 텍스트를 반환한다.
+ *  추론(reasoning) 모델도 답까지 생성할 수 있도록 넉넉한 max_tokens를 사용한다. */
 export async function testConnection(settings: LLMSettings): Promise<string> {
   const raw = await chatCompletion(
     settings,
     [{ role: "user", content: "연결 테스트입니다. ok만 답해 주세요." }],
-    { temperature: 0, maxTokens: 8 },
+    { temperature: 0, maxTokens: 64 },
   );
   return raw.trim();
 }

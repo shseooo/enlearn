@@ -152,6 +152,51 @@ describe("chatCompletion", () => {
     expect(out).toBe("legacy answer");
   });
 
+  it("추론 모델: content 없이 reasoning_content만 있으면 그걸 폴백으로 반환한다", async () => {
+    // Qwen3 등 추론 모델이 생각 과정에 토큰을 쓰고 finish_reason: length로 종료한 실제 응답
+    mockFetchOk({
+      id: "chatcmpl-50753373",
+      object: "chat.completion",
+      created: 1792647769,
+      model: "Qwen3-27B",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            reasoning_content:
+              "The user is asking for a connection test. I should reply ok.",
+          },
+          finish_reason: "length",
+        },
+      ],
+      usage: { prompt_tokens: 63, completion_tokens: 8 },
+    });
+    const out = await chatCompletion(settings, [
+      { role: "user", content: "hi" },
+    ]);
+    expect(out).toContain("connection test");
+  });
+
+  it("content가 있으면 reasoning_content를 무시한다", async () => {
+    mockFetchOk({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "real answer",
+            reasoning_content: "thinking...",
+          },
+          finish_reason: "stop",
+        },
+      ],
+    });
+    const out = await chatCompletion(settings, [
+      { role: "user", content: "hi" },
+    ]);
+    expect(out).toBe("real answer");
+  });
+
   it("빈 본문이면 에러 메시지에 (빈 응답)을 표시한다", async () => {
     mockFetchOk(null, { body: "" });
     await expect(
@@ -197,5 +242,13 @@ describe("testConnection", () => {
     mockFetchOk({ choices: [{ message: { content: "ok" } }] });
     const reply = await testConnection(settings);
     expect(reply).toBe("ok");
+  });
+
+  it("추론 모델이 답까지 만들 수 있도록 넉넉한 max_tokens(64)를 보낸다", async () => {
+    const m = mockFetchOk({ choices: [{ message: { content: "ok" } }] });
+    await testConnection(settings);
+    const [, init] = m.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.max_tokens).toBe(64);
   });
 });
