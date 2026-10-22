@@ -3,7 +3,7 @@ import {
   buildEndpoint,
   chatCompletion,
   evaluateFreeWriting,
-  generateKoreanSentence,
+  generateKoreanExercise,
   testConnection,
 } from "../llm";
 import type { LLMSettings } from "../types";
@@ -227,13 +227,56 @@ describe("evaluateFreeWriting", () => {
   });
 });
 
-describe("generateKoreanSentence", () => {
-  it("sentence 필드를 반환한다", async () => {
+describe("generateKoreanExercise", () => {
+  it("sentence와 hints를 함께 반환한다", async () => {
+    mockFetchOk({
+      choices: [
+        {
+          message: {
+            content:
+              '{"sentence": "여행을 좋아합니다.", "hints": ["like", "travel"]}',
+          },
+        },
+      ],
+    });
+    const r = await generateKoreanExercise(settings, "normal");
+    expect(r).toEqual({ sentence: "여행을 좋아합니다.", hints: ["like", "travel"] });
+  });
+
+  it("hints가 없는 응답도 빈 배열로 처리한다", async () => {
     mockFetchOk({
       choices: [{ message: { content: '{"sentence": "어제 공원에 갔다."}' } }],
     });
-    const s = await generateKoreanSentence(settings, "normal");
-    expect(s).toBe("어제 공원에 갔다.");
+    const r = await generateKoreanExercise(settings, "normal");
+    expect(r.hints).toEqual([]);
+  });
+
+  it("주제를 지정하면 요청 본문에 주제 정보가 포함된다", async () => {
+    const m = mockFetchOk({
+      choices: [
+        { message: { content: '{"sentence": "여행은 좋았습니다."}' } },
+      ],
+    });
+    await generateKoreanExercise(settings, "easy", "여행");
+    const [, init] = m.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    const userMsg = body.messages.find(
+      (msg: { role: string }) => msg.role === "user",
+    ) as { content: string };
+    expect(userMsg.content).toContain("주제: 여행");
+  });
+
+  it("주제를 지정하지 않으면 자유 주제로 요청한다", async () => {
+    const m = mockFetchOk({
+      choices: [{ message: { content: '{"sentence": "오늘 밥을 먹었어요."}' } }],
+    });
+    await generateKoreanExercise(settings, "normal", "");
+    const [, init] = m.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    const userMsg = body.messages.find(
+      (msg: { role: string }) => msg.role === "user",
+    ) as { content: string };
+    expect(userMsg.content).toContain("자유");
   });
 });
 

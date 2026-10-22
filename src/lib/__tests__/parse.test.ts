@@ -3,7 +3,7 @@ import {
   extractJson,
   normalizeEvaluation,
   parseEvaluation,
-  parseSentence,
+  parseKoreanExercise,
 } from "../parse";
 
 describe("extractJson", () => {
@@ -122,35 +122,62 @@ describe("parseEvaluation (평문 폴백)", () => {
   });
 });
 
-describe("parseSentence (평문 폴백)", () => {
-  it("JSON 없이 평문 문장을 반환하면 첫 줄을 문장으로 사용한다", () => {
-    expect(parseSentence("어제 공원에 갔다.")).toBe("어제 공원에 갔다.");
+describe("parseKoreanExercise", () => {
+  it("sentence와 hints를 함께 반환한다", () => {
+    expect(
+      parseKoreanExercise('{"sentence": "여행을 좋아합니다.", "hints": ["like", "travel"]}'),
+    ).toEqual({ sentence: "여행을 좋아합니다.", hints: ["like", "travel"] });
+  });
+
+  it("hints가 없으면 빈 배열로 채운다", () => {
+    const r = parseKoreanExercise('{"sentence": "어제 공원에 갔다."}');
+    expect(r.hints).toEqual([]);
+    expect(r.sentence).toBe("어제 공원에 갔다.");
+  });
+
+  it("hints의 공백 요소와 중복을 제거하고 6개까지 유지한다", () => {
+    const r = parseKoreanExercise(
+      '{"sentence": "hi", "hints": ["  ", "a", "a", "b", "c", "d", "e", "f", "g"]}',
+    );
+    expect(r.hints).toEqual(["a", "b", "c", "d", "e", "f"]);
+  });
+
+  it("hints가 배열이 아니면 빈 배열로 처리한다", () => {
+    expect(
+      parseKoreanExercise('{"sentence": "hi", "hints": "travel"}').hints,
+    ).toEqual([]);
+  });
+
+  it("코드펜스가 있어도 파싱한다", () => {
+    const r = parseKoreanExercise(
+      '```json\n{"sentence": "안녕?", "hints": ["hello"]}\n```',
+    );
+    expect(r).toEqual({ sentence: "안녕?", hints: ["hello"] });
+  });
+
+  it("JSON 없이 평문 문장을 반환하면 첫 줄을 문장으로, hints는 비게 만든다", () => {
+    expect(parseKoreanExercise("어제 공원에 갔다.")).toEqual({
+      sentence: "어제 공원에 갔다.",
+      hints: [],
+    });
   });
 
   it("'문장:' 같은 접두사는 제거한다", () => {
-    expect(parseSentence("문장: 오늘 날씨가 좋네요.")).toBe("오늘 날씨가 좋네요.");
-    expect(parseSentence("Sentence: The weather is nice today.")).toBe(
+    expect(parseKoreanExercise("문장: 오늘 날씨가 좋네요.").sentence).toBe(
+      "오늘 날씨가 좋네요.",
+    );
+    expect(parseKoreanExercise("Sentence: The weather is nice today.").sentence).toBe(
       "The weather is nice today.",
     );
   });
 
   it("여러 줄이면 라벨 줄은 건너뛰고 첫 실제 문장 줄을 사용한다", () => {
-    expect(parseSentence("문장입니다:\n밥을 먹었어요.\n끝.")).toBe("밥을 먹었어요.");
-  });
-});
-
-describe("parseSentence", () => {
-  it("sentence 필드를 반환한다", () => {
-    expect(parseSentence('{"sentence": "어제 공원에 갔다."}')).toBe(
-      "어제 공원에 갔다.",
+    expect(parseKoreanExercise("문장입니다:\n밥을 먹었어요.\n끝.").sentence).toBe(
+      "밥을 먹었어요.",
     );
   });
 
-  it("코드펜스가 있어도 파싱한다", () => {
-    expect(parseSentence('```json\n{"sentence": "안녕?"}\n```')).toBe("안녕?");
-  });
-
   it("sentence가 없으면 에러를 던진다", () => {
-    expect(() => parseSentence('{"foo": 1}')).toThrow(/문장\(sentence\)/);
+    expect(() => parseKoreanExercise('{"foo": 1}')).toThrow(/문장\(sentence\)/);
   });
 });

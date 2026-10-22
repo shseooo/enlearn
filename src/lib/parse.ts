@@ -1,4 +1,4 @@
-import type { Correction, EvaluationResult } from "./types";
+import type { Correction, EvaluationResult, KoreanExercise } from "./types";
 
 /**
  * LLM 응답 텍스트에서 JSON 객체를 추출한다.
@@ -114,15 +114,31 @@ export function parseEvaluation(raw: string): EvaluationResult {
 
 const SENTENCE_PREFIXES = /^(?:문장|한국어|한국어 문장|sentence)\s*[:：]\s*/i;
 
+/** hints 배열을 문자열 배열로 정규화한다. (공백 제거, 6개까지) */
+function normalizeHints(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item === "string") {
+      const t = item.trim();
+      if (t && !out.includes(t)) out.push(t);
+    }
+  }
+  return out.slice(0, 6);
+}
+
 /**
- * LLM 응답 문자열에서 한국어 문장을 추출한다.
- * { sentence } JSON이 아니면 첫 유효 줄을 평문 문장으로 취급한다.
+ * LLM 응답에서 { sentence, hints }를 추출한다.
+ * { sentence } JSON이 아니면 첫 유효 줄을 평문 문장으로, hints는 빈 배열로 폴백한다.
  */
-export function parseSentence(raw: string): string {
+export function parseKoreanExercise(raw: string): KoreanExercise {
   try {
     const data = extractJson(raw);
     if (typeof data.sentence === "string" && data.sentence.trim()) {
-      return data.sentence.trim();
+      return {
+        sentence: data.sentence.trim(),
+        hints: normalizeHints(data.hints),
+      };
     }
   } catch {
     // JSON이 아니면 아래 평문 폴백으로
@@ -136,6 +152,6 @@ export function parseSentence(raw: string): string {
   const first =
     lines.map(clean).find((l) => l && !/[:：]$/.test(l)) ??
     (lines[0] ? clean(lines[0]) : undefined);
-  if (first) return first;
+  if (first) return { sentence: first, hints: [] };
   throw new Error("LLM 응답에서 문장(sentence)을 찾을 수 없습니다.");
 }

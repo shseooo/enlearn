@@ -27,3 +27,9 @@ export interface EvaluationResult {
 }
 
 export type Difficulty = "easy" | "normal" | "hard";
+
+/** 번역 연습용 LLM 생성 결과: 한국어 문장 + 영어 힌트 단어 */
+export interface KoreanExercise {
+  sentence: string;
+  hints: string[];
+}

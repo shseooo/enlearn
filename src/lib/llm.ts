@@ -1,5 +1,10 @@
-import type { Difficulty, EvaluationResult, LLMSettings } from "./types";
-import { parseEvaluation, parseSentence } from "./parse";
+import type {
+  Difficulty,
+  EvaluationResult,
+  KoreanExercise,
+  LLMSettings,
+} from "./types";
+import { parseEvaluation, parseKoreanExercise } from "./parse";
 
 export interface ChatMessage {
   role: "system" | "user";
@@ -222,11 +227,14 @@ export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
   hard: "어려움 — 관용구, 복잡한 문장 구조, 비즈니스 표현",
 };
 
-/** 번역 연습용 한국어 문장을 생성한다. */
-export async function generateKoreanSentence(
+/** 번역 연습용 한국어 문장 + 영어 힌트 단어를 생성한다.
+ *  topic을 지정하면 그 주제 관련 문장을 만든다. (미지정은 자유 주제) */
+export async function generateKoreanExercise(
   settings: LLMSettings,
   difficulty: Difficulty,
-): Promise<string> {
+  topic?: string,
+): Promise<KoreanExercise> {
+  const trimmedTopic = topic?.trim() ?? "";
   const raw = await chatCompletion(
     settings,
     [
@@ -234,17 +242,25 @@ export async function generateKoreanSentence(
         role: "system",
         content:
           "영어 학습 앱을 위한 한국어 연습 문장을 만든다. " +
-          '반드시 {"sentence": "한국어 문장 한 문장"} 형태의 JSON만 출력해라. ' +
+          '반드시 {"sentence": "한국어 문장 한 문장", "hints": ["영어 힌트 단어"]} 형태의 JSON만 출력해라. ' +
+          'hints는 사용자가 해당 문장을 영어로 번역하는 데 도움이 되는 핵심 영어 단어/표현 2~4개다. ' +
+          "hints는 반드시 영어만 사용하고, 번역 결과를 그대로 드러내지 않도록 주의해라. " +
           "JSON 이외의 텍스트는 포함하지 마라.",
       },
       {
         role: "user",
-        content: `난이도: ${DIFFICULTY_LABELS[difficulty]}\n문장을 하나 만들어라.`,
+        content: [
+          `난이도: ${DIFFICULTY_LABELS[difficulty]}`,
+          trimmedTopic
+            ? `주제: ${trimmedTopic}`
+            : "주제: 자유 (일상적인 주제 중 적절한 것을 선택)",
+          "문장을 하나 만들어라.",
+        ].join("\n"),
       },
     ],
     { temperature: 0.8 },
   );
-  return parseSentence(raw);
+  return parseKoreanExercise(raw);
 }
 
 /** 설정 화면의 연결 테스트. 성공하면 LLM 응답 텍스트를 반환한다.

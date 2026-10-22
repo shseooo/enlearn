@@ -1,9 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import type { Difficulty, EvaluationResult, LLMSettings } from "@/lib/types";
+import type {
+  Difficulty,
+  EvaluationResult,
+  KoreanExercise,
+  LLMSettings,
+} from "@/lib/types";
 import {
-  generateKoreanSentence,
+  generateKoreanExercise,
   evaluateTranslation,
   DIFFICULTY_LABELS,
 } from "@/lib/llm";
@@ -22,7 +27,8 @@ export default function TranslationTab({
   onGoSettings,
 }: TranslationTabProps) {
   const [difficulty, setDifficulty] = useState<Difficulty>("normal");
-  const [korean, setKorean] = useState<string | null>(null);
+  const [topic, setTopic] = useState("");
+  const [exercise, setExercise] = useState<KoreanExercise | null>(null);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [answer, setAnswer] = useState("");
@@ -33,7 +39,7 @@ export default function TranslationTab({
   const canGenerate = isSettingsComplete(settings) && !generating;
   const canEvaluate =
     isSettingsComplete(settings) &&
-    Boolean(korean) &&
+    Boolean(exercise) &&
     answer.trim().length > 0 &&
     !loading;
 
@@ -43,11 +49,11 @@ export default function TranslationTab({
     setResult(null);
     setError(null);
     try {
-      const sentence = await generateKoreanSentence(settings, difficulty);
-      setKorean(sentence);
+      const next = await generateKoreanExercise(settings, difficulty, topic);
+      setExercise(next);
       setAnswer("");
     } catch (e) {
-      setKorean(null);
+      setExercise(null);
       setGenError(
         e instanceof Error ? e.message : "문장 생성 중 오류가 발생했습니다.",
       );
@@ -57,12 +63,12 @@ export default function TranslationTab({
   }
 
   async function handleEvaluate() {
-    if (!korean) return;
+    if (!exercise) return;
     setLoading(true);
     setError(null);
     try {
       setResult(
-        await evaluateTranslation(settings, korean, answer.trim()),
+        await evaluateTranslation(settings, exercise.sentence, answer.trim()),
       );
     } catch (e) {
       setResult(null);
@@ -94,6 +100,21 @@ export default function TranslationTab({
           </select>
         </div>
 
+        <label
+          htmlFor="sentence-topic"
+          className="mt-4 mb-1.5 block text-sm font-semibold text-slate-700"
+        >
+          주제 <span className="font-normal text-slate-400">(선택)</span>
+        </label>
+        <input
+          id="sentence-topic"
+          type="text"
+          value={topic}
+          onChange={(e) => setTopic(e.target.value)}
+          placeholder="예: 여행, 직장, 날씨, 건강 — 비우면 자유 주제"
+          className="w-full rounded-xl border border-slate-300 p-3 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
+        />
+
         <button
           type="button"
           onClick={handleGetSentence}
@@ -110,7 +131,7 @@ export default function TranslationTab({
         )}
       </div>
 
-      {korean && (
+      {exercise && (
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-700">
@@ -126,8 +147,26 @@ export default function TranslationTab({
             </button>
           </div>
           <p className="rounded-xl bg-slate-50 p-4 text-lg font-medium text-slate-800">
-            {korean}
+            {exercise.sentence}
           </p>
+
+          {exercise.hints.length > 0 && (
+            <details className="mt-3 rounded-lg border border-slate-200 bg-slate-50">
+              <summary className="cursor-pointer select-none px-3 py-2 text-xs font-semibold text-slate-600 transition hover:text-indigo-700">
+                💡 힌트 단어 {exercise.hints.length}개 보기
+              </summary>
+              <div className="flex flex-wrap gap-2 px-3 pb-3">
+                {exercise.hints.map((h) => (
+                  <span
+                    key={h}
+                    className="rounded-full bg-indigo-100 px-3 py-1 text-xs font-medium text-indigo-800"
+                  >
+                    {h}
+                  </span>
+                ))}
+              </div>
+            </details>
+          )}
 
           <label
             htmlFor="translation-answer"
