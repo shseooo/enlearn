@@ -208,9 +208,17 @@ function hashSeed(text: string): number {
   return h >>> 0;
 }
 
-/** 같은 날짜·레인에서는 항상 같은 순서가 나오게 하는 기본 시드 */
+/** 로력(사용자의 달력) 날짜. toISOString()은 UTC 기준이라 KST 09:00에 하루가 바뀐다. */
+export function localDateString(date = new Date()): string {
+  const y = date.getFullYear();
+  const m = `${date.getMonth() + 1}`.padStart(2, "0");
+  const d = `${date.getDate()}`.padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/** 같은 날짜·레인에서는 항상 같은 순서가 나오게 하는 기본 시드 (로컬 자정 기준) */
 export function dailySeed(lane: CorpusLane, date = new Date()): number {
-  return hashSeed(`${lane}:${date.toISOString().slice(0, 10)}`);
+  return hashSeed(`${lane}:${localDateString(date)}`);
 }
 
 export interface PickOptions {

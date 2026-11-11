@@ -3,12 +3,14 @@ import {
   cacheKorean,
   clearCorpusCache,
   clearKoreanCache,
+  dailySeed,
   getCachedCorpus,
   getCachedKorean,
   getProgressServerSnapshot,
   getProgressSnapshot,
   isSeen,
   koreanCacheCount,
+  localDateString,
   loadCorpus,
   loadSeen,
   markSeen,
@@ -50,6 +52,27 @@ beforeEach(() => {
   window.localStorage.clear();
   clearCorpusCache();
   vi.restoreAllMocks();
+});
+
+describe("일일 시드", () => {
+  it("localDateString는 UTC가 아니라 로력 날짜를 쓴다", () => {
+    // 로컬 23:30 — UTC로 환산하면 다음 날인 시간대가 많다 (KST는 09:00에 하루가 바뀐다)
+    expect(localDateString(new Date(2026, 0, 1, 23, 30))).toBe("2026-01-01");
+    expect(dailySeed("daily", new Date(2026, 0, 1, 23, 30))).toBe(
+      dailySeed("daily", new Date(2026, 0, 1, 0, 5)),
+    );
+  });
+
+  it("로컬 자정을 넘기면 시드가 바뀐다", () => {
+    expect(dailySeed("daily", new Date(2026, 0, 1, 23, 59))).not.toBe(
+      dailySeed("daily", new Date(2026, 0, 2, 0, 1)),
+    );
+  });
+
+  it("레인이 다르면 다른 순서가 된다", () => {
+    const d = new Date(2026, 0, 1, 12);
+    expect(dailySeed("daily", d)).not.toBe(dailySeed("classic", d));
+  });
 });
 
 describe("코퍼스 로딩", () => {
