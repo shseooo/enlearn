@@ -10,6 +10,7 @@ import {
   getCachedKorean,
   getProgressServerSnapshot,
   getProgressSnapshot,
+  importKoreanCache,
   importSeen,
   isSeen,
   koreanCacheCount,
@@ -240,6 +241,28 @@ describe("동화 문장의 한국어 캐시", () => {
     expect(koreanCacheCount()).toBe(0);
   });
 
+  it("백업으로 들어온 번역 캐시도 cacheKorean과 같은 규칙으로 줄인다 (리뷰 1-16)", () => {
+    const accepted = importKoreanCache({
+      "classic:1:long": {
+        ko: "가".repeat(3000),
+        hints: Array.from({ length: 20 }, (_, i) => `힌트${i}`.repeat(30)),
+      },
+      "classic:2:mixed": { ko: "정상 번역입니다.", hints: ["ok", 42, null] },
+      "classic:3:empty": { ko: "   ", hints: ["x"] },
+      "classic:4:notobj": "번역 문자열",
+    });
+    expect(accepted).toBe(2);
+
+    const long = getCachedKorean("classic:1:long")!;
+    expect(long.ko.length).toBe(600);
+    expect(long.hints).toHaveLength(6);
+    expect(long.hints.every((h) => h.length <= 40)).toBe(true);
+
+    expect(getCachedKorean("classic:2:mixed")!.hints).toEqual(["ok"]);
+    expect(getCachedKorean("classic:3:empty")).toBeNull();
+    expect(getCachedKorean("classic:4:notobj")).toBeNull();
+  });
+
   it("코퍼스에 한국어가 있으면 그대로, 없으면 캐시를 쓴다", () => {
     const withKo = entry({ ko: "이미 있는 한국어." });
     expect(resolveKorean(withKo)).toBe("이미 있는 한국어.");
@@ -328,19 +351,37 @@ describe("코퍼스 요청 취소·타임아웃 (리뷰 3-2)", () => {
 });
 
 describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
-  it("번역 캐시 값 길이를 줄이고, 큐가 넘치면 오래된 것부터 버린다", () => {
+  it("번역 캐시 값 길이를 줄이고, 상한에서 오래된 것부터 버린다", () => {
     cacheKorean("classic:1:long", "가".repeat(2000), Array.from({ length: 12 }, (_, i) => `힌트${i}가`.repeat(20)));
     const cached = getCachedKorean("classic:1:long")!;
     expect(cached.ko.length).toBe(600);
     expect(cached.hints).toHaveLength(6);
     expect(cached.hints[0].length).toBeLessThanOrEqual(40);
 
+    // 상한까지 채우는 경로는 한 번의 벌크 쓰기로 만든다. 4,050번의 개별 쓰기는
+    // O(n²)이라 기본 testTimeout에 걸려 스위트가 간헐적으로 실패했다(리뷰 1-7).
+    const bulk: Record<string, { ko: string; hints: string[] }> = {};
     for (let i = 0; i < MAX_KOREAN_CACHE + 50; i++) {
-      cacheKorean(`classic:${i}:fill`, `채움 번역 ${i}번입니다.`, ["fill"]);
+      bulk[`classic:${i}:fill`] = { ko: `채움 번역 ${i}번입니다.`, hints: ["fill"] };
     }
+    expect(importKoreanCache(bulk, true)).toBeLessThanOrEqual(MAX_KOREAN_CACHE);
     expect(koreanCacheCount()).toBe(MAX_KOREAN_CACHE);
     // 가장 나중에 들어온 항목은 살아있다
     expect(getCachedKorean(`classic:${MAX_KOREAN_CACHE + 49}:fill`)).not.toBeNull();
+    expect(getCachedKorean("classic:0:fill")).toBeNull();
+  });
+
+  it("상한까지 채운 뒤 한 건을 더 추가해도 개수를 넘지 않는다 (증분 경로)", () => {
+    const bulk: Record<string, { ko: string; hints: string[] }> = {};
+    for (let i = 0; i < MAX_KOREAN_CACHE; i++) {
+      bulk[`classic:${i}:fill`] = { ko: `채움 번역 ${i}번입니다.`, hints: ["fill"] };
+    }
+    importKoreanCache(bulk, true);
+
+    cacheKorean("classic:extra:fill", "마지막에 추가한 번역.", ["extra"]);
+    expect(koreanCacheCount()).toBe(MAX_KOREAN_CACHE);
+    expect(getCachedKorean("classic:extra:fill")).not.toBeNull();
+    expect(getCachedKorean("classic:0:fill")).toBeNull();
   });
 
   it("푼 문장 기록도 상한을 넘지 않는다", () => {
@@ -351,6 +392,22 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     const accepted = importSeen(bulk, true);
     expect(accepted).toBeLessThanOrEqual(MAX_SEEN);
     expect(seenCount()).toBe(MAX_SEEN);
+  });
+
+  it("저장이 실패하면 다음 읽기도 저장소의 이전 값을 본다 (파싱 캐시)", () => {
+    markSeen("daily:1:kept");
+    const before = window.localStorage.getItem("enlearn.seen.v2");
+
+    const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError", "QuotaExceededError");
+    });
+    markSeen("daily:2:phantom");
+    spy.mockRestore();
+
+    // 메모리에 파싱 결과를 재사용해도, 실패한 변경이 화면에 보이지 않아야 한다
+    expect(window.localStorage.getItem("enlearn.seen.v2")).toBe(before);
+    expect(isSeen("daily:2:phantom")).toBe(false);
+    expect(seenCount()).toBe(1);
   });
 
   it("저장이 실패하면 가져온 개수는 0이고 이전 기록이 그대로 남는다", () => {

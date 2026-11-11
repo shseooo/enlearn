@@ -38,6 +38,29 @@ export interface BackupCounts {
   koreanCache: number;
 }
 
+/**
+ * 파싱 직후의 백업. 항목은 아직 검증되지 않은 raw JSON 값이다(리뷰 1-19).
+ * 실제 검증은 restoreBackup이 importLog/importSrs/importSeen/importKoreanCache의
+ * sanitizer를 거칠 때 일어난다. 그래서 이 타입을 믿고 항목에 손을 대면 안 된다.
+ */
+export interface RawBackupData {
+  log: unknown[];
+  srs: unknown[];
+  seen: Record<string, unknown>;
+  koreanCache: Record<string, unknown>;
+  /** API 키는 넣지 않는다. 연결 설정의 이름만 보관한다. */
+  settings?: { host: string; model: string; endpoint: string };
+}
+
+export interface RawBackupFile {
+  app: typeof BACKUP_APP;
+  version: number;
+  exportedAt: string;
+  counts: BackupCounts;
+  data: RawBackupData;
+}
+
+/** 이 앱이 저장소에서 만들어낸 "검증된" 백업 (내보내기용) */
 export interface BackupFile {
   app: typeof BACKUP_APP;
   version: number;
@@ -48,10 +71,16 @@ export interface BackupFile {
     srs: SrsItem[];
     seen: Record<string, string>;
     koreanCache: Record<string, CachedKorean>;
-    /** API 키는 넣지 않는다. 연결 설정의 이름만 보관한다. */
     settings?: { host: string; model: string; endpoint: string };
   };
 }
+
+/**
+ * 백업 항목 수 상한(리뷰 1-16). 실제 저장소 상한(기록 400 · seen 20,000 ·
+ * 번역 캐시 4,000)보다 훨씬 넉넉하게 잡아, 정상 백업은 절대 걸리지 않게 한다.
+ * 수십만 항목을 파싱·병합하면 메인 스레드가 멈춘다.
+ */
+export const MAX_BACKUP_ITEMS = 50_000;
 
 export function backupFilename(now = new Date()): string {
   return `enlearn-backup-${localDateString(now)}.json`;
@@ -62,7 +91,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** 데이터에서 개수를 세는다. 파일에 적힌 counts는 믿지 않는다(3-4). */
-function countsOf(data: BackupFile["data"]): BackupCounts {
+function countsOf(
+  data: Pick<RawBackupData, "log" | "srs" | "seen" | "koreanCache">,
+): BackupCounts {
   return {
     log: data.log.length,
     srs: data.srs.length,
@@ -111,7 +142,7 @@ export function buildBackup(includeSettings = true): BackupFile {
 }
 
 /** 백업 JSON을 검증한다. 형식이 다르면 한국어 오류 메시지를 던진다. */
-export function parseBackup(text: string): BackupFile {
+export function parseBackup(text: string): RawBackupFile {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -142,21 +173,35 @@ export function parseBackup(text: string): BackupFile {
   if (!Array.isArray(d.log) && !Array.isArray(d.srs)) {
     throw new Error("백업에 연습 기록(log)도 복습 큐(srs)도 없습니다.");
   }
-  const payload: BackupFile["data"] = {
-    log: Array.isArray(d.log) ? (d.log as PracticeRecord[]) : [],
-    srs: Array.isArray(d.srs) ? (d.srs as SrsItem[]) : [],
+  const payload: RawBackupData = {
+    log: Array.isArray(d.log) ? d.log : [],
+    srs: Array.isArray(d.srs) ? d.srs : [],
     seen:
       typeof d.seen === "object" && d.seen !== null && !Array.isArray(d.seen)
-        ? (d.seen as Record<string, string>)
+        ? (d.seen as Record<string, unknown>)
         : {},
     koreanCache:
       typeof d.koreanCache === "object" &&
       d.koreanCache !== null &&
       !Array.isArray(d.koreanCache)
-        ? (d.koreanCache as Record<string, CachedKorean>)
+        ? (d.koreanCache as Record<string, unknown>)
         : {},
     settings: safeSettings(d.settings),
   };
+  // 항목 수가 비정상적으로 많으면 복원 시도 자체가 탭을 멈춘다(리뷰 1-16).
+  const counts: Array<[string, number]> = [
+    ["연습 기록", payload.log.length],
+    ["복습 큐", payload.srs.length],
+    ["받은 문장 기록", Object.keys(payload.seen).length],
+    ["번역 캐시", Object.keys(payload.koreanCache).length],
+  ];
+  for (const [label, count] of counts) {
+    if (count > MAX_BACKUP_ITEMS) {
+      throw new Error(
+        `백업의 ${label} 항목이 너무 많습니다(${count}개, 최대 ${MAX_BACKUP_ITEMS}개).`,
+      );
+    }
+  }
   return {
     app: BACKUP_APP,
     version: BACKUP_VERSION,
@@ -183,7 +228,7 @@ export interface RestoreResult {
  * 바뀌고 API 키가 그 도메인으로 간다. 별도 확인을 거쳐서만 반영한다.
  */
 export function restoreBackup(
-  file: BackupFile,
+  file: RawBackupFile,
   replace = false,
   restoreSettings = false,
 ): RestoreResult {

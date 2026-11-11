@@ -9,7 +9,7 @@
 import type { CorpusLane } from "./types";
 import { localDateString } from "./corpus";
 import { shortHash } from "./corpus-tools";
-import { safeSetItem } from "./storage";
+import { safeSetItem, parseStored } from "./storage";
 
 /** 코퍼스 레인 + 코퍼스가 아닌 경로(자유 작성 / AI 생성) */
 export type PracticeLane = CorpusLane | "free" | "ai";
@@ -64,14 +64,10 @@ export function daysBetween(a: string, b: string): number {
 
 function readArray<T>(key: string): T[] {
   if (typeof window === "undefined") return [];
-  const raw = window.localStorage.getItem(key);
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
-  } catch {
-    return [];
-  }
+  // 같은 문자열은 다시 파싱하지 않는다 (스냅샷·통계가 렌더마다 400개를 파는 일을 줄인다)
+  return (
+    parseStored<T[]>(key, window.localStorage.getItem(key), Array.isArray) ?? []
+  );
 }
 
 /** 알림 묶음: 한 동작이 여러 저장소를 바꿔도 화면은 한 번만 갱신한다 */
@@ -511,7 +507,10 @@ const EMPTY_SNAPSHOT: PracticeSnapshot = {
   topMistakes: [],
 };
 
-let snapshotRaw: string | null = null;
+// 두 저장소의 원문을 이어 붙이지 않고 따로 비교한다 (큰 문자열 할당 방지, 리뷰 1-6)
+// undefined는 "아직 계산하지 않음" (getItem은 undefined를 돌려주지 않는다)
+let snapshotRawLog: string | null | undefined = undefined;
+let snapshotRawSrs: string | null | undefined = undefined;
 let snapshotValue: PracticeSnapshot = EMPTY_SNAPSHOT;
 
 function notifyPractice(): void {
@@ -530,11 +529,11 @@ export function subscribeToPractice(callback: () => void): () => void {
 
 /** 값이 바뀐 뒤에야 새 참조를 돌려준다 (무한 재렌더 방지) */
 export function getPracticeSnapshot(): PracticeSnapshot {
-  const raw = `${window.localStorage.getItem(LOG_KEY) ?? ""}|${
-    window.localStorage.getItem(SRS_KEY) ?? ""
-  }`;
-  if (raw !== snapshotRaw) {
-    snapshotRaw = raw;
+  const rawLog = window.localStorage.getItem(LOG_KEY);
+  const rawSrs = window.localStorage.getItem(SRS_KEY);
+  if (rawLog !== snapshotRawLog || rawSrs !== snapshotRawSrs) {
+    snapshotRawLog = rawLog;
+    snapshotRawSrs = rawSrs;
     const stats = practiceStats();
     snapshotValue = {
       total: stats.total,
@@ -697,7 +696,9 @@ export function importLog(items: unknown[], replace = false): number {
   if (replace) {
     // 대체는 유효 항목이 0개여야 실제로 비워야 한다 (그렇지 않으면 "지웠다"가 거짓이 된다)
     writeArray(LOG_KEY, incoming.slice(-MAX_RECORDS));
-    return incoming.length;
+    // 개수 상한(MAX_RECORDS)으로 잘린 경우 요청 개수가 아니라 실제로 남은 개수를
+    // 알려준다. 병합 경로와 같은 규칙(저장 후 재확인)을 쓴다 (리뷰 1-4).
+    return loadLog().length;
   }
   if (!incoming.length) return 0;
   const byIdDate = new Map<string, PracticeRecord>();

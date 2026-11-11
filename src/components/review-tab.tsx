@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -16,6 +17,7 @@ import {
   lastAnswerFor,
   localToday,
   nextReviewDate,
+  practiceStats,
   subscribeToPractice,
   weeklySeries,
   type ReviewGrade,
@@ -26,7 +28,6 @@ import { useCancellable } from "@/lib/use-cancellable";
 import type { EvaluationResult, LLMSettings } from "@/lib/types";
 import SettingsWarning from "./settings-warning";
 import WeeklyChart from "./weekly-chart";
-import StorageWarning from "./storage-warning";
 
 const GRADES: { id: ReviewGrade; label: string; className: string }[] = [
   {
@@ -101,21 +102,48 @@ export default function ReviewTab({
   // 채점 결과·loading 적용은 호출 번호로 판단한다(취소해도 loading은 꺼야 한다)
   const requestSeq = useRef(0);
 
-  // 서버 렌더에서는 스냅샷이 0이므로 Date를 만드는 함수를 부르지 않는다.
-  // (Next 16은 Client Component 렌더 중 new Date()를 불안정 값으로 잡아 prerender를 실패시킨다)
-  // localStorage를 읽는 계산은 스냅샷이 바뀔 때만 한다. 이 탭은 다른 탭에서
-  // 키를 입력할 때마다 다시 렌더되는데, 그때마다 5번씩 파싱하지 않는다(3-10).
+  // 서버 렌더에서는 Date를 읽는 계산을 하지 않는다 (Next 16이 불안정 값으로 잡는다).
+  /**
+   * 자정을 넘긴 횟수. 자정에는 오늘/대기 큐가 바뀌는데 저장소는 그대로라서
+   * 스냅샷이 갱신되지 않는다. 앱이 탭으로 계속 열려 있는 학습 앱이라 타이머로
+   * 재계산한다(리뷰 1-13).
+   */
+  const [dayTick, setDayTick] = useState(0);
+  useEffect(() => {
+    const now = new Date();
+    const midnight = new Date(now);
+    midnight.setHours(24, 0, 0, 0);
+    const timer = setTimeout(
+      () => setDayTick((n) => n + 1),
+      midnight.getTime() - now.getTime(),
+    );
+    return () => clearTimeout(timer);
+  }, [dayTick]);
+
+  // localStorage를 읽는 계산은 스냅샷이 바뀌거나 자정을 넘길 때만 한다.
+  // 이 탭은 다른 탭에서 키를 입력할 때마다 다시 렌더되는데, 그때마다
+  // 저장소를 몇 번씩 파싱하지 않는다(3-10).
   const derived = useMemo(() => {
     const has = snapshot.total > 0;
+    // 저장소는 그대로여도 자정이 지나면 오늘/주간/대기 계산이 달라진다.
+    // 날짜로 판정하는 값은 스냅샷(snapshot)이 아니라 여기서 다시 계산한다(리뷰 1-13).
+    const stats = has ? practiceStats() : null;
+    const queue = snapshot.srs > 0 ? dueItems() : [];
     return {
       today: has ? localToday() : "",
+      todayCount: stats?.today ?? 0,
+      streak: stats?.streak ?? 0,
       weeks: has ? weeklySeries(8) : [],
-      queue: snapshot.due > 0 ? dueItems() : [],
+      queue,
+      due: queue.length,
       nextDue:
-        snapshot.srs > 0 && snapshot.due === 0 ? nextReviewDate() : null,
+        snapshot.srs > 0 && queue.length === 0 ? nextReviewDate() : null,
     };
-  }, [snapshot]);
-  const { today, weeks, queue, nextDue } = derived;
+    // dayTick: 자정을 넘기면 오늘/대기 계산이 다시 돈다 (리뷰 1-13).
+    // dayTick은 계산에 쓰지 않고 "재계산 신호"로만 쓴다 → 규칙이 불필요하다고 본다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot, dayTick]);
+  const { today, todayCount, streak, weeks, queue, due, nextDue } = derived;
   const current =
     (currentId ? queue.find((x) => x.id === currentId) : null) ??
     queue[0] ??
@@ -182,12 +210,19 @@ export default function ReviewTab({
     }
   }
 
-  const previousAnswer = current ? lastAnswerFor(current.id) : null;
+  // 지난 답안은 memo 밖에서 부르면 렌더마다 연습 기록(최대 400개)을 다시 판다.
+  // 지금 보는 문장이 바뀔 때만 계산한다(리뷰 1-12).
+  const currentEntryId = current?.id ?? "";
+  const previousAnswer = useMemo(
+    () => (currentEntryId ? lastAnswerFor(currentEntryId) : null),
+    // snapshot은 계산에 쓰지 않지만 "기록이 바뀜"을 아는 유일한 신호다(lastAnswerFor는 저장소를 읽는다)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentEntryId, snapshot],
+  );
   const settingsOk = isSettingsComplete(settings);
 
   return (
     <div className="space-y-4">
-      <StorageWarning />
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="mb-3 text-base font-bold text-slate-800">
           📊 연습 현황
@@ -195,18 +230,18 @@ export default function ReviewTab({
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <Metric
             label="연속 연습"
-            value={`${snapshot.streak}일`}
+            value={`${streak}일`}
             hint={
-              snapshot.streak > 0 ? "오늘도 풀면 이어집니다" : "오늘 시작해 보세요"
+              streak > 0 ? "오늘도 풀면 이어집니다" : "오늘 시작해 보세요"
             }
           />
-          <Metric label="오늘" value={`${snapshot.today}문장`} />
+          <Metric label="오늘" value={`${todayCount}문장`} />
           <Metric label="이번 주" value={`${snapshot.week}문장`} />
           <Metric label="평균 점수" value={`${snapshot.avgScore}점`} />
         </div>
         <p className="mt-3 text-xs text-slate-500" role="status">
           복습 대기{" "}
-          <strong className="font-semibold text-slate-700">{snapshot.due}</strong>개
+          <strong className="font-semibold text-slate-700">{due}</strong>개
           · 복습 큐 {snapshot.srs}개
         </p>
         {weeks.length > 0 && (

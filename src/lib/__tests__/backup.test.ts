@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BACKUP_APP,
+  MAX_BACKUP_ITEMS,
   settingsWarning,
   backupFilename,
   buildBackup,
@@ -424,6 +425,53 @@ describe("백업 파일 손상 대응", () => {
         parseBackup(JSON.stringify({ app: BACKUP_APP, version, data: { log: [], srs: [] } })),
       ).toThrow(/백업 버전/);
     }
+  });
+
+  it("항목 수가 비정상적으로 많으면 읽은 직후 거부한다 (리뷰 1-16)", () => {
+    const huge = new Array(MAX_BACKUP_ITEMS + 1).fill(null);
+    expect(() =>
+      parseBackup(
+        JSON.stringify({ app: BACKUP_APP, version: 1, data: { log: huge, srs: [] } }),
+      ),
+    ).toThrow(/항목이 너무 많습니다/);
+
+    const hugeSeen = Object.fromEntries(
+      Array.from({ length: MAX_BACKUP_ITEMS + 1 }, (_, i) => [`classic:${i}:k`, "2026-01-01"]),
+    );
+    expect(() =>
+      parseBackup(
+        JSON.stringify({ app: BACKUP_APP, version: 1, data: { log: [], srs: [], seen: hugeSeen } }),
+      ),
+    ).toThrow(/받은 문장 기록/);
+  });
+
+  it("파싱 직후 항목은 미검증 값이고, 복원할 때 sanitizer를 통과한다 (리뷰 1-19)", () => {
+    const file = parseBackup(
+      JSON.stringify({
+        app: BACKUP_APP,
+        version: 1,
+        data: {
+          log: [
+            null,
+            42,
+            "문자열 항목",
+            { date: "2026-01-02", lane: "classic", en: "Only this one survives.", answer: "a", score: 10 },
+          ],
+          srs: [{ bogus: true }],
+          seen: { "classic:1:ok": "2026-01-02T00:00:00.000Z", "classic:2:bad": 42 },
+          koreanCache: { "classic:1:ok": { ko: "살아남는 번역.", hints: ["ok"] }, "classic:3:bad": { ko: 42 } },
+        },
+      }),
+    );
+    // 미검증 항목을 담고 있어도 개수는 실제 내용대로 센다
+    expect(file.counts.log).toBe(4);
+
+    const result = restoreBackup(file, true);
+    expect(result.log).toBe(1);
+    expect(result.srs).toBe(0);
+    expect(result.seen).toBe(1);
+    expect(result.koreanCache).toBe(1);
+    expect(loadLog().map((r) => r.en)).toEqual(["Only this one survives."]);
   });
 });
 

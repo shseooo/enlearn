@@ -308,6 +308,11 @@ export default function TranslationTab({
             // (Tatoeba 원문이 AI 모드로 바뀐 뒤에도 "📖 참고 번역"으로 보였던 문제)
             requestSeq.current += 1;
             cancel();
+            // seq를 올린 쪽에서 상태를 직접 해제한다. 지연 응답은 stale()로
+            // finally의 reset을 건너뛰므로, 여기서 끄지 않으면 picking/loading이
+            // 영원히 켜진 채 남아 "문장 받기"가 새로고침 전까지 막힌다(리뷰 1-2).
+            setPicking(false);
+            setLoading(false);
             setMode(e.target.value as SourceMode);
             setBookId("all");
             setPickError(null);

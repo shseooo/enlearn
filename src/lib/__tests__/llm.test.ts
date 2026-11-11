@@ -352,6 +352,47 @@ describe("chatCompletion", () => {
     );
   });
 
+  it("1,200자가 넘는 평가 응답도 잘리지 않고 파싱된다 (리뷰 1-1)", async () => {
+    // 실제 평가 응답 길이(500~1,500자). 성공 본문을 자르면 JSON이 깨진다.
+    const content = JSON.stringify({
+      score: 82,
+      feedback: "문법은 좋지만 시제 하나가 어색해요. " + "보충 설명. ".repeat(120),
+      corrections: [
+        { original: "goed", better: "went", reason: "불규칙 과거형" + " 입니다.".repeat(50) },
+      ],
+      betterExpression: "I went to the park yesterday.",
+    });
+    expect(content.length).toBeGreaterThan(1200);
+    mockFetchOk({ choices: [{ message: { content } }] });
+
+    const r = await evaluateFreeWriting(settings, "I goed to the park yesterday.");
+    expect(r.score).toBe(82);
+    expect(r.corrections).toHaveLength(1);
+    expect(r.feedback).toContain("보충 설명.");
+  });
+
+  it("번역 연습(참고 원문 포함)도 긴 응답을 그대로 파싱한다", async () => {
+    const content = JSON.stringify({
+      score: 77,
+      feedback: "자연스러워요. " + "자세한 설명이 이어집니다. ".repeat(90),
+      corrections: [],
+      betterExpression: "I am hungry.",
+      referenceTranslation: "I am hungry.",
+    });
+    const m = mockFetchOk({ choices: [{ message: { content } }] });
+    const r = await evaluateTranslation(settings, "배가 고파요.", "I am hungry.");
+    expect(r.score).toBe(77);
+    const [, init] = m.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string).max_tokens).toBe(1200);
+  });
+
+  it("비정상적으로 큰 성공 본문은 파싱하지 않고 안내한다", async () => {
+    mockFetchOk(null, { body: '{"choices":[' + "x".repeat(1_100_000) });
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }]),
+    ).rejects.toThrow(/비정상적으로 큽니다/);
+  });
+
   it("에러 메시지에 표시하는 프로바이더 본문에서 시크릿을 마스킹한다", async () => {
     vi.stubGlobal(
       "fetch",

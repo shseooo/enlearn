@@ -19,12 +19,13 @@
  * 캐시 항목의 hints는 항상 빈 배열로 쓴다. 힌트는 빌더가 코퍼스 어휘 빈도로 계산하며,
  * 캐시에 힌트가 들어 있으면 그 값을 우선하기 때문이다.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { normalizeKey } from "../src/lib/corpus-tools.ts";
 
 import { foreignLetterRuns } from "./lib/foreign-text.ts";
+import { readJsonCache, writeJsonAtomically } from "./lib/json-file.ts";
 
 const ROOT = process.cwd();
 const CACHE_DIR = join(ROOT, ".corpus-cache");
@@ -86,9 +87,12 @@ function parseArg(arg: string, worklistSize: number): { path: string; offset: nu
 }
 
 const rows = readWorklist();
-const cache: Record<string, CacheEntry> = existsSync(CACHE_FILE)
-  ? (JSON.parse(readFileSync(CACHE_FILE, "utf8")) as Record<string, CacheEntry>)
-  : {};
+// 빌더와 같은 읽기 규칙: 손상된 캐시는 조용히 {}로 바꾸지 않고 멈춘다(R1-3).
+const cache: Record<string, CacheEntry> = readJsonCache<Record<string, CacheEntry>>(
+  CACHE_FILE,
+  "번역 재사용 캐시(.corpus-cache/translations.json)",
+  {},
+);
 
 let added = 0;
 let overwritten = 0;
@@ -146,9 +150,7 @@ for (const arg of process.argv.slice(2)) {
 // 임시 파일로 썼다가 이름을 바꾼다. 쓰는 도중에 멈추면 캐시 전체(JSON 한 장)가 깨진다.
 // 빌더는 부서진 캐시를 조용히 빈 캐시로 취급하므로, 1,400개 번역을 한 번에 잃을 수 있다.
 mkdirSync(CACHE_DIR, { recursive: true });
-const tempFile = `${CACHE_FILE}.tmp`;
-writeFileSync(tempFile, JSON.stringify(cache));
-renameSync(tempFile, CACHE_FILE); // .corpus-cache/는 gitignore 대상
+writeJsonAtomically(CACHE_FILE, cache); // .corpus-cache/는 gitignore 대상
 const stillMissing = rows.filter((row) => !cache[normalizeKey(row.en)]?.ko).length;
 console.log(
   `캐시 합침: 신규 ${added} · 갱신 ${overwritten} · 건너뜀 ${skipped} — ` +

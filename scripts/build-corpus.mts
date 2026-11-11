@@ -32,6 +32,8 @@ import {
   stripWikisourceMarkup,
 } from "../src/lib/corpus-tools.ts";
 import { parseTranslationBatch } from "../src/lib/parse-batch.ts";
+import { hasHangul } from "./lib/foreign-text.ts";
+import { readJsonCache, writeJsonAtomically } from "./lib/json-file.ts";
 
 // ---------------------------------------------------------------------------
 // 목록
@@ -109,7 +111,13 @@ const CLASSIC_CAP = positiveInt("classic-cap", 1400);
 /** --llm 사용 시 요청 단위 / 동시 요청 수 (사이트·프로바이더 배려로 낮게) */
 const LLM_BATCH = Math.min(positiveInt("batch", 10), 30);
 const LLM_CONCURRENCY = Math.min(positiveInt("concurrency", 3), 8);
-const ROOT = process.cwd();
+/** 테스트·기록용: 실제 배치 크기(--batch로 바뀐다) */
+export const LLM_BATCH_SIZE = LLM_BATCH;
+/**
+ * 작업 루트. 기본은 현재 위치지만 테스트는 임시 작업 공간을 가리킨다
+ * (실제 .corpus-cache/translations.json를 망가뜨리지 않게, 리뷰 1-9).
+ */
+const ROOT = process.env.ENLEARN_CORPUS_ROOT ?? process.cwd();
 const CACHE_DIR = join(ROOT, ".corpus-cache");
 const OUT_DIR = join(ROOT, "public", "data", "corpus");
 
@@ -173,8 +181,12 @@ async function cachedBytes(name: string, urls: string[]): Promise<Buffer> {
   throw error ?? new Error(name);
 }
 
-/** 외부 프로그램 없이 zip을 푼다 (stored/deflate만 지원). */
-function unzipEntries(buf: Buffer): { name: string; data: Buffer }[] {
+/**
+ * 외부 프로그램 없이 zip을 푼다 (stored/deflate만 지원).
+ * ⚠️ 네트워크에서 받은 바이트를 파싱하므로 모든 읽기에 경계 검사를 한다.
+ * 검사가 없으면 잘린 파일에서 원인 없는 RangeError가 난다(리뷰 1-17).
+ */
+export function unzipEntries(buf: Buffer): { name: string; data: Buffer }[] {
   let eocd = -1;
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65_557); i--) {
     if (buf.readUInt32LE(i) === 0x06054b50) {
@@ -184,24 +196,69 @@ function unzipEntries(buf: Buffer): { name: string; data: Buffer }[] {
   }
   if (eocd < 0) throw new Error("zip 구조를 읽을 수 없습니다(EOCD 없음).");
 
-  const count = buf.readUInt16LE(eocd + 10);
-  let off = buf.readUInt32LE(eocd + 16);
+  const outOfBounds = (off: number, size: number): boolean =>
+    !Number.isInteger(off) || off < 0 || off + size > buf.length;
+  const read16 = (off: number, what: string): number => {
+    if (outOfBounds(off, 2)) {
+      throw new Error(
+        `zip 구조가 손상되었습니다: ${what} 위치(${off})가 파일 길이(${buf.length}바이트)를 벗어났습니다.`,
+      );
+    }
+    return buf.readUInt16LE(off);
+  };
+  const read32 = (off: number, what: string): number => {
+    if (outOfBounds(off, 4)) {
+      throw new Error(
+        `zip 구조가 손상되었습니다: ${what} 위치(${off})가 파일 길이(${buf.length}바이트)를 벗어났습니다.`,
+      );
+    }
+    return buf.readUInt32LE(off);
+  };
+
+  const count = read16(eocd + 10, "중앙 디렉터리 항목 수");
+  let off = read32(eocd + 16, "중앙 디렉터리 시작 위치");
   const out: { name: string; data: Buffer }[] = [];
 
   for (let i = 0; i < count; i++) {
-    if (buf.readUInt32LE(off) !== 0x02014b50) break;
-    const method = buf.readUInt16LE(off + 10);
-    const compSize = buf.readUInt32LE(off + 20);
-    const nameLen = buf.readUInt16LE(off + 28);
-    const extraLen = buf.readUInt16LE(off + 30);
-    const commentLen = buf.readUInt16LE(off + 32);
-    const localOff = buf.readUInt32LE(off + 42);
+    if (off + 4 > buf.length || buf.readUInt32LE(off) !== 0x02014b50) {
+      console.log(`  ! zip 중앙 디렉터리가 ${i + 1}번째 항목에서 끊겼습니다 (나머지는 건너뜀)`);
+      break;
+    }
+    const method = read16(off + 10, "압축 방식");
+    const compSize = read32(off + 20, "압축 크기");
+    const nameLen = read16(off + 28, "파일 이름 길이");
+    const extraLen = read16(off + 30, "추가 필드 길이");
+    const commentLen = read16(off + 32, "주석 길이");
+    const localOff = read32(off + 42, "로컬 헤더 위치");
+    if (off + 46 + nameLen > buf.length) {
+      throw new Error(
+        `zip 구조가 손상되었습니다: 파일 이름 영역이 파일 길이를 벗어났습니다(${off + 46 + nameLen} > ${buf.length}).`,
+      );
+    }
     const name = buf.toString("utf8", off + 46, off + 46 + nameLen);
-    const localNameLen = buf.readUInt16LE(localOff + 26);
-    const localExtraLen = buf.readUInt16LE(localOff + 28);
+    if (localOff + 4 > buf.length || buf.readUInt32LE(localOff) !== 0x04034b50) {
+      throw new Error(
+        `zip 구조가 손상되었습니다: ${name}의 로컬 파일 헤더 위치(${localOff})가 잘못되었습니다.`,
+      );
+    }
+    const localNameLen = read16(localOff + 26, "로컬 파일 이름 길이");
+    const localExtraLen = read16(localOff + 28, "로컬 추가 필드 길이");
     const start = localOff + 30 + localNameLen + localExtraLen;
+    if (start < 0 || start + compSize > buf.length) {
+      throw new Error(
+        `zip 구조가 손상되었습니다: ${name}의 데이터 영역(${start}+${compSize})이 파일 길이를 벗어났습니다.`,
+      );
+    }
     const raw = buf.subarray(start, start + compSize);
-    out.push({ name, data: method === 8 ? inflateRawSync(raw) : raw });
+    try {
+      out.push({ name, data: method === 8 ? inflateRawSync(raw) : raw });
+    } catch (e) {
+      throw new Error(
+        `zip 안의 ${name}을(를) 펼치지 못했습니다(파일이 손상되었습니다): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
     off += 46 + nameLen + extraLen + commentLen;
   }
   return out;
@@ -211,8 +268,13 @@ function unzipEntries(buf: Buffer): { name: string; data: Buffer }[] {
 // 일상 회화 레인 (Tatoeba 한↔영어)
 // ---------------------------------------------------------------------------
 
-function hasHangul(text: string): boolean {
-  return /[\u3131-\uD79D]/.test(text);
+/**
+ * 한글 문장 판정. 범위는 scripts/lib/foreign-text.ts의 공통 규칙을 쓴다.
+ * ⚠️ 예전 범위([\u3131-\uD79D])는 CJK 한자·Bamum까지 담아 한글이 한 자도 없는
+ * 일본어/중국어 문장이 통과했다(리뷰 1-5 / 1-11).
+ */
+export function acceptsDailyKorean(ko: string): boolean {
+  return hasHangul(ko) && ko.length >= 4 && ko.length <= 80 && /[.!?…]$/.test(ko);
 }
 
 /** Tatoeba attribution 문자열에서 문장 id만 뽑는다 (출처 표기용) */
@@ -244,9 +306,7 @@ function buildDaily(): { entries: CorpusEntry[]; attribution: string } {
     const koText = ko.trim();
     if (!isPracticeSentence(enText, { minWords: 4, maxWords: 16 })) continue;
     if (DAILY_BAD.test(enText) || DAILY_BAD.test(koText)) continue;
-    if (!hasHangul(koText)) continue;
-    if (koText.length < 4 || koText.length > 80) continue;
-    if (!/[.!?…]$/.test(koText)) continue;
+    if (!acceptsDailyKorean(koText)) continue;
 
     const key = normalizeKey(enText);
     if (seen.has(key)) continue;
@@ -362,21 +422,20 @@ function llmFromEnv(): LlmEnv | null {
 type TranslationCache = Record<string, { ko: string; hints: string[] }>;
 const TRANSLATION_CACHE_FILE = join(CACHE_DIR, "translations.json");
 
-function loadTranslationCache(): TranslationCache {
-  if (!existsSync(TRANSLATION_CACHE_FILE)) return {};
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(TRANSLATION_CACHE_FILE, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as TranslationCache)
-      : {};
-  } catch {
-    return {};
-  }
+export function loadTranslationCache(): TranslationCache {
+  // 파싱 실패를 {}로 삼키면 이미 끝낸 1,400개 번역을 "0건"으로 잃는다(리뷰 1-3).
+  return readJsonCache<TranslationCache>(
+    TRANSLATION_CACHE_FILE,
+    "번역 재사용 캐시(.corpus-cache/translations.json)",
+    {},
+  );
 }
 
-function saveTranslationCache(cache: TranslationCache): void {
+export function saveTranslationCache(cache: TranslationCache): void {
   mkdirSync(CACHE_DIR, { recursive: true });
-  writeFileSync(TRANSLATION_CACHE_FILE, JSON.stringify(cache));
+  // 임시 파일 + rename. 제자리에서 덮어쓰다 멈추면 캐시 한 장이 통째로 깨진다.
+  // merge-translations.mts가 쓰던 방법과 같은 헬퍼를 쓴다(R3-1/R1-3).
+  writeJsonAtomically(TRANSLATION_CACHE_FILE, cache);
 }
 
 const BATCH_SYSTEM_PROMPT = `너는 영어 문장을 학습용 한국어로 옮기는 번역기다.
@@ -505,7 +564,7 @@ async function translateBatch(
 }
 
 /** 코퍼스 항목에 한국어가 없으면 LLM으로 채운다 (캐시 재사용 + 유한 동시성) */
-async function fillKoreanTranslations(
+export async function fillKoreanTranslations(
   entries: CorpusEntry[],
   env: LlmEnv,
 ): Promise<void> {

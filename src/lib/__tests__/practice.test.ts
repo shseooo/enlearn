@@ -509,6 +509,48 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     expect(practiceStats().total).toBe(400);
   });
 
+  it("대체(replace)도 상한으로 잘린 개수가 아니라 실제 저장 개수를 알려준다 (리뷰 1-4)", () => {
+    const items = Array.from({ length: 500 }, (_, i) => ({
+      id: `replace-${i}`,
+      date: `2026-01-${String((i % 28) + 1).padStart(2, "0")}`,
+      ts: 1_700_000_000_000 + i,
+      lane: "classic",
+      en: `Replace sentence ${i}.`,
+      ko: `대체 기록 ${i}번 문장.`,
+      answer: "answer",
+      score: 50,
+      corrections: [],
+    }));
+    // 기존 기록이 있어도 대체 후 개수는 상한 안에서 맞는다
+    logPractice({
+      lane: "classic",
+      en: "A sentence stored before the replace.",
+      ko: "대체 전에 저장된 문장.",
+      answer: "old",
+      score: 30,
+      corrections: [],
+    });
+
+    expect(importLog(items, true)).toBe(400);
+    expect(practiceStats().total).toBe(400);
+    expect(loadLog().some((r) => r.id === "replace-499")).toBe(true);
+    expect(loadLog().some((r) => r.id === "replace-0")).toBe(false);
+  });
+
+  it("대체할 항목이 0개면 저장소도 비워진다", () => {
+    logPractice({
+      lane: "classic",
+      en: "A sentence to be wiped by an empty replace.",
+      ko: "빈 대체로 지워지는 문장.",
+      answer: "bye",
+      score: 40,
+      corrections: [],
+    });
+    expect(practiceStats().total).toBe(1);
+    expect(importLog([], true)).toBe(0);
+    expect(practiceStats().total).toBe(0);
+  });
+
   it("복습 큐는 상한을 넘지 않고, 진척도가 낮은 항목부터 밀려난다", () => {
     const many = Array.from({ length: 600 }, (_, i) => ({
       id: `queue-${i}`,

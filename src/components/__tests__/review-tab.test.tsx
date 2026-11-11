@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ReviewTab from "../review-tab";
 
 const evaluateMock = vi.fn();
@@ -356,13 +356,57 @@ describe("ReviewTab — 주간 그래프", () => {
     renderTab();
 
     expect(await screen.findByText("주간 연습량")).toBeInTheDocument();
-    const chart = screen.getByRole("img");
-    expect(chart.getAttribute("aria-label")).toMatch(/주 .*문장/);
+    const chart = screen.getByRole("list", { name: "주간 연습량" });
+    expect(chart).toBeInTheDocument();
+    // 항목별 라벨이 스크린리더에 읽히는 구조인가 (role=img로 죽어 있지 않는다)
+    const items = within(chart).getAllByRole("listitem");
+    expect(
+      items.some((li) => /문장/.test(li.getAttribute("aria-label") ?? "")),
+    ).toBe(true);
     expect(screen.getAllByText("90점").length).toBeGreaterThan(0);
   });
 
   it("기록이 없으면 그래프를 그리지 않는다", () => {
     renderTab();
     expect(screen.queryByText("주간 연습량")).not.toBeInTheDocument();
+  });
+});
+
+describe("ReviewTab — 자정을 넘기면 다시 계산한다 (리뷰 1-13)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("자정 전에 렌더해도 자정을 넘기면 대기 큐가 새로 계산된다", () => {
+    vi.useFakeTimers();
+    // 1/5 23:30 — 오늘(1/5) 연습한 문장의 복습 시점은 1/6
+    vi.setSystemTime(new Date(2026, 0, 5, 23, 30, 0));
+    logPractice({
+      lane: "classic",
+      en: "A sentence that becomes due after midnight.",
+      ko: "자정 뒤에 복습 나오는 문장.",
+      answer: "an attempt",
+      score: 70,
+      corrections: [],
+      now: new Date(2026, 0, 5, 9, 0, 0),
+    });
+
+    renderTab();
+    expect(screen.getByText("오늘 복습할 문장은 없습니다")).toBeInTheDocument();
+    expect(screen.getByText(/다음 복습은 2026-01-06부/)).toBeInTheDocument();
+    expect(screen.getByText("오늘")).toBeInTheDocument();
+    expect(screen.getAllByText("1문장").length).toBeGreaterThan(0);
+
+    // 로컬 자정을 넘어 1/6 00:15 — 저장소 변경 없이 큐가 갱신되어야 한다
+    act(() => {
+      vi.advanceTimersByTime(45 * 60 * 1000);
+    });
+
+    // fake timer 안에서는 findBy*(실제 타이머 필요)를 쓸 수 없다 → act 후 직접 확인한다
+    expect(
+      screen.getByText("자정 뒤에 복습 나오는 문장."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("오늘 복습할 문장은 없습니다")).not.toBeInTheDocument();
+    expect(screen.getByText("0문장")).toBeInTheDocument();
   });
 });

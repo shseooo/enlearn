@@ -205,6 +205,8 @@ export function isRetryableStatus(status: number): boolean {
 }
 
 const DEFAULT_RETRIES = 2;
+/** 성공 본문의 메모리 상한. 정상 응답(수 KB)보다 훨씬 넓고, 폭주/이상 응답만 걸러낸다. */
+const MAX_SUCCESS_BODY_CHARS = 1_000_000;
 const DEFAULT_RETRY_DELAY_MS = 800;
 const MAX_RETRY_DELAY_MS = 15_000;
 
@@ -282,7 +284,7 @@ async function requestOnce(
 
   if (!res.ok) {
     // 오류 본문은 사용자가 그대로 읽는 문장이다. 긴 HTML 오류 페이지를
-    // 통째로 넣지 않는다.
+    // 통째로 넣지 않는다. (화면에 보여주는 조각이므로 잘라 읽어 좋다)
     const body = (await res.text().catch(() => "")).slice(0, 500);
     throw new HttpError(
       res.status,
@@ -295,7 +297,15 @@ async function requestOnce(
 
   // 본문을 먼저 텍스트로 받아 형식을 직접 판별한다.
   // (res.json()은 SSE/비JSON 본문에서 실패해 원인을 숨기므로)
-  const body = (await res.text().catch(() => "")).slice(0, 500);
+  // ⚠️ 성공 본문은 "잘라 읽으면" 안 된다: 평가 응답은 500~1,500자인데 500자로
+  // 자르면 JSON이 깨져 모든 연습이 실패한다(리뷰 1-1). 화면에 보여주는 조각만
+  // sanitizeProviderBody의 limit으로 자른다.
+  const body = await res.text().catch(() => "");
+  if (body.length > MAX_SUCCESS_BODY_CHARS) {
+    throw new Error(
+      `LLM 응답이 비정상적으로 큽니다(${body.length}자). 프롬프트/모델 설정을 확인하세요.`,
+    );
+  }
   if (!body && signal.aborted)
     throw new Error(cancellationMessage(options.signal));
   const contentType = res.headers.get("content-type") ?? "";

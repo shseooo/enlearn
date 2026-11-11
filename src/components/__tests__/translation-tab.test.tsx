@@ -323,6 +323,64 @@ describe("TranslationTab — 취소·출처 변경 경합 (리뷰 3-2)", () => {
     fetcher.respond(dailyFile);
     fetcher.restore();
   });
+
+  it("문장 받기 중에 출처를 바꾸면 버튼이 다시 활성화된다 (리뷰 1-2)", async () => {
+    const fetcher = slowFetch();
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    expect(
+      screen.getByRole("button", { name: /문장 가져오는 중/ }),
+    ).toBeDisabled();
+
+    await user.selectOptions(screen.getByLabelText(/문장 출처/), "ai");
+    // 진행 중이던 호출의 finally는 stale()로 reset을 건너뛴다.
+    // 출처 변경 쪽에서 상태를 해제하지 않으면 영구히 잠긴다.
+    expect(screen.queryByRole("button", { name: /문장 가져오는 중/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /문장 받기/ })).toBeEnabled();
+    expect(screen.queryByText("문장을 가져오고 있어요...")).not.toBeInTheDocument();
+
+    // 늦게 도착한 응답이 상태를 다시 잠그지도 않는다
+    fetcher.respond(dailyFile);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByRole("button", { name: /문장 받기/ })).toBeEnabled();
+    fetcher.restore();
+  });
+
+  it("평가 중에 출처를 바꾸면 loading이 꺼지고 결과 카드는 사라진다 (리뷰 1-2)", async () => {
+    prefillCorpus("daily", dailyFile);
+    let resolveEvaluate!: (value: unknown) => void;
+    evaluateMock.mockImplementation(
+      () => new Promise((resolve) => (resolveEvaluate = resolve)),
+    );
+
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await screen.findByText("톰은 많이 아파 보여.");
+    await user.type(screen.getByLabelText(/내 영어 번역/), "Tom looked very sick.");
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+    expect(
+      await screen.findByText("LLM이 번역을 평가하고 있어요..."),
+    ).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText(/문장 출처/), "ai");
+    expect(
+      screen.queryByText("LLM이 번역을 평가하고 있어요..."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /문장 받기/ })).toBeEnabled();
+
+    resolveEvaluate({
+      score: 70,
+      feedback: "좋습니다.",
+      corrections: [],
+      betterExpression: "Tom looks very sick.",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText("LLM이 번역을 평가하고 있어요...")).not.toBeInTheDocument();
+  });
 });
 
 describe("TranslationTab — 추가 질문 히스토리 격리 (리뷰 3-3)", () => {

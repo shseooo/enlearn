@@ -4,11 +4,11 @@
  * 동작하는지 여기서 고정한다. 실제 저장소를 건드리지 않게 임시 디렉터리에서 돌린다.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 
 // vitest는 저장소 루트에서 돌린다. 스크립트 자체는 cwd(임시 작업 공간) 기준으로 움직인다.
 const REPO = process.cwd();
@@ -59,14 +59,22 @@ function runOk(root: string, script: string, args: string[] = []): string {
   return result.out;
 }
 
-let root = "";
+/** 만들고 지운 작업 공간을 추적한다 (실행마다 /tmp에 폴더를 남기지 않는다, 리뷰 1-15) */
+const workspaces: string[] = [];
 
-beforeAll(() => {
-  root = makeWorkspace();
+function makeTrackedWorkspace(): string {
+  const root = makeWorkspace();
+  workspaces.push(root);
+  return root;
+}
+
+afterAll(() => {
+  for (const root of workspaces) rmSync(root, { recursive: true, force: true });
 });
 
 describe("사전 번역 도구사슬", () => {
   it("작업 목록은 작업 행 번호와 코퍼스 배열 번호를 갈라서 적는다", () => {
+    const root = makeTrackedWorkspace();
     const out = runOk(root, "dump-untranslated.mts");
     expect(out).toContain("작업 목록 4문장");
 
@@ -84,6 +92,9 @@ describe("사전 번역 도구사슬", () => {
   });
 
   it("번역이 필요한 문장이 없으면 기존 작업 목록을 지우지 않는다", () => {
+    // 다른 테스트가 만든 작업 목록에 기대지 않고, 같은 작업 공간에서 스스로 채운다.
+    const root = makeTrackedWorkspace();
+    runOk(root, "dump-untranslated.mts");
     const before = readFileSync(join(root, ".corpus-cache", "worklist.tsv"), "utf8");
     writeFileSync(
       join(root, "public", "data", "corpus", "classics.json"),
@@ -109,8 +120,7 @@ describe("사전 번역 도구사슬", () => {
   });
 
   it("행 번호가 어긋난 원고는 파일 전체를 거부한다", () => {
-    // 이전 테스트가 코퍼스를 3문장(전부 번역됨)으로 바꿨으니 작업 목록을 다시 채운다.
-    const workspace = makeWorkspace();
+    const workspace = makeTrackedWorkspace();
     run(workspace, "dump-untranslated.mts");
     mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
     writeFileSync(
@@ -123,7 +133,7 @@ describe("사전 번역 도구사슬", () => {
   });
 
   it("원고에 다른 언어 문자가 섞이면 경고를 내놓는다", () => {
-    const workspace = makeWorkspace();
+    const workspace = makeTrackedWorkspace();
     run(workspace, "dump-untranslated.mts");
     mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
     writeFileSync(
@@ -135,7 +145,7 @@ describe("사전 번역 도구사슬", () => {
   });
 
   it("코퍼스 파일에 아직 반영되지 않은 번역은 빌드 미반영으로 알린다", () => {
-    const workspace = makeWorkspace();
+    const workspace = makeTrackedWorkspace();
     run(workspace, "dump-untranslated.mts");
     mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
     writeFileSync(

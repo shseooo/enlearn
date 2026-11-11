@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { clearStorageError, safeSetItem, storageError } from "../storage";
+import {
+  clearStorageError,
+  safeSetItem,
+  storageError,
+  subscribeToStorageError,
+} from "../storage";
 
 describe("safeSetItem (리뷰 3-9)", () => {
   it("정상 저장은 true, 이후 오류 기록은 비워진다", () => {
@@ -39,5 +44,51 @@ describe("safeSetItem (리뷰 3-9)", () => {
     vi.spyOn(Storage.prototype, "setItem").mockRestore();
     expect(window.localStorage.getItem("probe.keep")).toBe("original");
     window.localStorage.removeItem("probe.keep");
+  });
+
+  it("저장 실패와 회복을 구독자에게 알린다 (리뷰 1-8)", () => {
+    clearStorageError();
+    const notified = vi.fn();
+    const unsubscribe = subscribeToStorageError(notified);
+
+    const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError", "QuotaExceededError");
+    });
+    safeSetItem("probe.event", "x");
+    spy.mockRestore();
+    expect(notified).toHaveBeenCalledTimes(1);
+
+    // 다음 쓰기가 성공하면 오류가 사라졌으니 다시 알려준다
+    safeSetItem("probe.event", "ok");
+    expect(notified).toHaveBeenCalledTimes(2);
+    expect(storageError()).toBeNull();
+
+    // 오류가 없을 때의 성공은 불필요한 알림을 내지 않는다
+    safeSetItem("probe.event", "again");
+    expect(notified).toHaveBeenCalledTimes(2);
+
+    unsubscribe();
+    clearStorageError();
+    window.localStorage.removeItem("probe.event");
+  });
+
+  it("clearStorageError는 오류를 지우고 알림을 보낸다 (리뷰 1-14)", () => {
+    const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError", "QuotaExceededError");
+    });
+    safeSetItem("probe.dismiss", "x");
+    spy.mockRestore();
+
+    const notified = vi.fn();
+    const unsubscribe = subscribeToStorageError(notified);
+    clearStorageError();
+    expect(notified).toHaveBeenCalledTimes(1);
+    expect(storageError()).toBeNull();
+
+    // 이미 비어 있으면 헛된 알림을 내지 않는다
+    clearStorageError();
+    expect(notified).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    window.localStorage.removeItem("probe.dismiss");
   });
 });

@@ -6,20 +6,26 @@ import {
   parseBackup,
   restoreBackup,
   settingsWarning,
-  type BackupFile,
+  type RawBackupFile,
 } from "@/lib/backup";
 import {
   getPracticeServerSnapshot,
   getPracticeSnapshot,
   subscribeToPractice,
 } from "@/lib/practice";
-import StorageWarning from "./storage-warning";
 
 /**
  * 연습 기록 백업/복원 카드.
  * 서버가 없는 앱이라 브라우저가 초기화되면 연속 연습일·복습 큐가 사라진다.
  * API 키는 어떤 백업에도 들어가지 않는다(호스트·모델 이름만 보관).
  */
+
+/**
+ * 읽어보기 전에 거르는 파일 크기 상한(리뷰 1-16). 실제 백업은 수백 KB이고,
+ * 수백 MB JSON을 file.text()로 읽으면 메인 스레드가 멈춘다.
+ */
+const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
+
 export default function BackupCard() {
   const snapshot = useSyncExternalStore(
     subscribeToPractice,
@@ -27,7 +33,7 @@ export default function BackupCard() {
     getPracticeServerSnapshot,
   );
   const fileRef = useRef<HTMLInputElement>(null);
-  const [loaded, setLoaded] = useState<BackupFile | null>(null);
+  const [loaded, setLoaded] = useState<RawBackupFile | null>(null);
   const [fileName, setFileName] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -52,6 +58,14 @@ export default function BackupCard() {
     setLoaded(null);
     setError(null);
     setMessage(null);
+    if (file.size > MAX_BACKUP_BYTES) {
+      setError(
+        `백업 파일이 너무 큽니다(${(file.size / 1024 / 1024).toFixed(1)}MB). ` +
+          `최대 ${MAX_BACKUP_BYTES / 1024 / 1024}MB까지 읽을 수 있습니다.`,
+      );
+      if (fileRef.current) fileRef.current.value = "";
+      return;
+    }
     try {
       const text = await file.text();
       const parsed = parseBackup(text);
@@ -84,7 +98,6 @@ export default function BackupCard() {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5">
       <h2 className="mb-1 text-base font-bold text-slate-800">백업 · 복구</h2>
-      <StorageWarning />
       <p className="mb-4 text-xs leading-relaxed text-slate-500">
         연습 기록과 복습 큐는 이 브라우저에만 있습니다. 다른 기기·브라우저로
         옮기려면 내보내기를, 되돌리려면 가져오기를 씁니다.{" "}

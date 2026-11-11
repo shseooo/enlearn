@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import BackupCard from "../backup-card";
+import StorageWarning from "../storage-warning";
 import { loadLog, logPractice } from "@/lib/practice";
 import { saveSettings } from "@/lib/settings";
 import { BACKUP_APP, buildBackup } from "@/lib/backup";
@@ -248,6 +249,22 @@ describe("BackupCard — 연결 설정 되돌리기 (3-1)", () => {
   });
 });
 
+describe("BackupCard — 큰 파일 거부 (리뷰 1-16)", () => {
+  it("지정 크기를 넘는 파일은 읽지 않고 안내한다", async () => {
+    render(<BackupCard />);
+    const user = userEvent.setup();
+    const huge = new File([new Uint8Array(6 * 1024 * 1024)], "huge.json", {
+      type: "application/json",
+    });
+
+    await user.upload(screen.getByLabelText(/백업 가져오기/), huge);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/너무 큽니다/);
+    // 미리보기(합치기/대체 버튼)가 뜨면 안 된다
+    expect(screen.queryByRole("button", { name: /지금 기록에 합치기/ })).toBeNull();
+  });
+});
+
 describe("BackupCard — 저장 실패 안내 (리뷰 3-9)", () => {
   it("저장 공간이 가득 찼으면 조용히 넘어가지 않고 안내한다", async () => {
     logPractice({
@@ -265,7 +282,14 @@ describe("BackupCard — 저장 실패 안내 (리뷰 3-9)", () => {
         throw new DOMException("QuotaExceededError", "QuotaExceededError");
       });
 
-    render(<BackupCard />);
+    // 저장이 일어난 탭과 무관하게 안내가 보이도록, StorageWarning은 화면 상위에서
+    // 한 번만 마운트한다(page.tsx). 여기서는 그 배치를 그대로 재현한다(리뷰 1-8).
+    render(
+      <>
+        <BackupCard />
+        <StorageWarning />
+      </>,
+    );
     const user = userEvent.setup();
     await user.upload(
       screen.getByLabelText(/백업 가져오기/),

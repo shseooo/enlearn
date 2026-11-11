@@ -52,4 +52,11 @@ describe("hasHangul", () => {
     expect(hasHangul("no korean here")).toBe(false);
     expect(hasHangul("12345 —")).toBe(false);
   });
+
+  it("CJK 한자·일본 가나·Bamum은 한글이 아니다 (리뷰 1-5)", () => {
+    // 예전 빌더 판정([\u3131-\uD79D])은 이 구간을 모두 한글로 봤다.
+    expect(hasHangul("猫が寝ています.")).toBe(false);
+    expect(hasHangul("我今天去学校.")).toBe(false);
+    expect(hasHangul("ꀀꀁꀂ")).toBe(false);
+  });
 });

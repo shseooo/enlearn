@@ -18,7 +18,7 @@ describe("WeeklyChart", () => {
     render(<WeeklyChart weeks={[week({}), week({ start: "2026-01-12", end: "2026-01-18", label: "1.12" })]} today="2026-01-12" />);
     const bars = screen.getAllByRole("listitem");
     expect(bars).toHaveLength(2);
-    expect(screen.getByRole("img")).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "주간 연습량" })).toBeInTheDocument();
     expect(screen.getAllByText("-")).toHaveLength(2);
   });
 
@@ -50,13 +50,23 @@ describe("WeeklyChart", () => {
 
   it("그래프 전체 설명과 주별 설명이 접근 가능하다 (툴팁에 의존하지 않는다)", () => {
     render(<WeeklyChart weeks={[week({ count: 2, avgScore: 70, mistakes: 1 })]} today="2026-01-07" />);
-    expect(screen.getByRole("img")).toHaveAttribute(
-      "aria-label",
-      expect.stringContaining("1.5주 2문장"),
+    const list = screen.getByRole("list", { name: "주간 연습량" });
+    // role="img"는 하위를 표현용으로 만든다 → 목록 구조를 유지해야 항목이 읽힌다
+    expect(list).not.toHaveAttribute("role", "img");
+
+    const describedBy = list.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)).toHaveTextContent(
+      /막대는 그 주에 연습한 문장 수/,
     );
+
     expect(screen.getByRole("listitem")).toHaveAttribute(
       "aria-label",
       expect.stringContaining("2026-01-05 ~ 2026-01-11"),
+    );
+    expect(screen.getByRole("listitem")).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("2문장"),
     );
     expect(screen.getByRole("listitem")).toHaveAttribute("tabindex", "0");
   });

@@ -9,9 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CorpusEntry, CorpusFile } from "../../src/lib/types";
 
-import { foreignLetterRuns } from "../lib/foreign-text.ts";
-
-const HANGUL = /[가-힣]/;
+import { foreignLetterRuns, hasHangul } from "../lib/foreign-text.ts";
 
 /**
  * 한국어 문장 안에서 정당한 라틴 문자.
@@ -53,7 +51,9 @@ describe("코퍼스 데이터 품질", () => {
   it("한국어 번역은 한글을 담고 문장 부호로 끝난다", () => {
     const bad = all
       .map((e) => e.ko ?? "")
-      .filter((ko) => !HANGUL.test(ko) || !/[.!?"»’]$/.test(ko.trim()));
+      // 판정은 공통 규칙(scripts/lib/foreign-text.ts)을 쓴다 — 각자 다른 정규식을
+      // 두면 "한 곳은 통과하고 다른 곳은 실패"하는 상태가 남는다(리뷰 1-11).
+      .filter((ko) => !hasHangul(ko) || !/[.!?"»’]$/.test(ko.trim()));
     expect(bad.slice(0, 5)).toEqual([]);
   });
 

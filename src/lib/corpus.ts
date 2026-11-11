@@ -10,7 +10,7 @@ import type {
   Difficulty,
 } from "./types";
 import { entryKey } from "./corpus-tools";
-import { safeSetItem } from "./storage";
+import { parseStored, safeSetItem } from "./storage";
 
 // v2: entryKey가 해시 기반으로 바뀌어 v1 값은 재사용할 수 없다 (기록 초기화).
 const SEEN_KEY = "enlearn.seen.v2";
@@ -178,17 +178,20 @@ export async function loadCorpus(
 
 type SeenMap = Record<string, string>;
 
+const isPlainObject = (value: unknown): boolean =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * 저장된 객체를 읽는다. 같은 문자열은 다시 파싱하지 않는다(리뷰 1-6).
+ * ⚠️ 돌려받는 객체는 freeze되어 있다 — 고칠 새에는 새 객체를 만든다.
+ */
 function readJson<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
-  const raw = window.localStorage.getItem(key);
-  if (!raw) return fallback;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed === "object" && parsed !== null) return parsed as T;
-  } catch {
-    // 깨진 값은 무시하고 기본값
-  }
-  return fallback;
+  return parseStored<T>(key, window.localStorage.getItem(key), isPlainObject) ?? fallback;
+}
+
+function countKeys(store: object, prefix?: string): number {
+  return Object.keys(store).filter((k) => !prefix || k.startsWith(prefix)).length;
 }
 
 export function loadSeen(): SeenMap {
@@ -197,8 +200,8 @@ export function loadSeen(): SeenMap {
 
 export function markSeen(key: string): void {
   if (typeof window === "undefined") return;
-  const seen = loadSeen();
-  seen[key] = new Date().toISOString();
+  // 읽은 객체를 그대로 고치지 않는다 (파싱 캐시가 같은 객체를 돌려준다)
+  const seen = { ...loadSeen(), [key]: new Date().toISOString() };
   safeSetItem(SEEN_KEY, JSON.stringify(trimSeen(seen)));
   notifyProgressOnce();
 }
@@ -223,9 +226,7 @@ export function resetSeen(lane?: CorpusLane): void {
 }
 
 export function seenCount(lane?: CorpusLane): number {
-  return Object.keys(loadSeen()).filter(
-    (k) => !lane || k.startsWith(`${lane}:`),
-  ).length;
+  return countKeys(loadSeen(), lane ? `${lane}:` : undefined);
 }
 
 /** 출처 드롭다운에 쓸 (id, title, 개수) 목록 */
@@ -377,7 +378,7 @@ export function getCachedKorean(key: string): CachedKorean | null {
 
 export function cacheKorean(key: string, ko: string, hints: string[]): void {
   if (typeof window === "undefined") return;
-  const store = readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
+  const store = { ...readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {}) };
   // 값 길이를 줄여 둔다. 이상한 번역이 길게 쌓이면 저장소를 통째로 차지한다.
   store[key] = {
     ko: ko.slice(0, 600),
@@ -389,9 +390,10 @@ export function cacheKorean(key: string, ko: string, hints: string[]): void {
 
 /** 캐시된 한국어 번역 개수 (설정 화면 표시용) */
 export function koreanCacheCount(lane?: CorpusLane): number {
-  return Object.keys(
+  return countKeys(
     readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {}),
-  ).filter((k) => !lane || k.startsWith(`${lane}:`)).length;
+    lane ? `${lane}:` : undefined,
+  );
 }
 
 /**
@@ -423,7 +425,11 @@ export interface ProgressCounts {
 }
 
 const EMPTY_PROGRESS: ProgressCounts = { daily: 0, classic: 0, korean: 0 };
-let progressRaw = "";
+// 두 저장소의 원문을 이어 붙이지 않고 따로 비교한다. 3MB 문자열을 렌더마다
+// 새로 만드는 것 자체가 비용이었다(리뷰 1-6).
+// undefined는 "아직 계산하지 않음" (localStorage.getItem은 undefined를 돌려주지 않는다)
+let progressRawSeen: string | null | undefined = undefined;
+let progressRawKorean: string | null | undefined = undefined;
 let progressValue: ProgressCounts = EMPTY_PROGRESS;
 
 function notifyProgress(): void {
@@ -460,15 +466,17 @@ export function subscribeToProgress(callback: () => void): () => void {
 
 /** 값이 바뀐 뒤에야 새 참조를 돌려준다 (무한 재렌더 방지) */
 export function getProgressSnapshot(): ProgressCounts {
-  const raw = `${window.localStorage.getItem(SEEN_KEY) ?? ""}|${
-    window.localStorage.getItem(KO_CACHE_KEY) ?? ""
-  }`;
-  if (raw !== progressRaw) {
-    progressRaw = raw;
+  const rawSeen = window.localStorage.getItem(SEEN_KEY);
+  const rawKorean = window.localStorage.getItem(KO_CACHE_KEY);
+  if (rawSeen !== progressRawSeen || rawKorean !== progressRawKorean) {
+    progressRawSeen = rawSeen;
+    progressRawKorean = rawKorean;
+    // 두 원문을 한 번만 읽고 개수를 센다 (이전 구현은 4번 읽고 3번 파싱했다)
+    const seen = readJson<SeenMap>(SEEN_KEY, {});
     progressValue = {
-      daily: seenCount("daily"),
-      classic: seenCount("classic"),
-      korean: koreanCacheCount(),
+      daily: countKeys(seen, "daily:"),
+      classic: countKeys(seen, "classic:"),
+      korean: countKeys(readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {})),
     };
   }
   return progressValue;
@@ -516,15 +524,35 @@ export function importSeen(value: unknown, replace = false): number {
   return Object.keys(incoming).filter((k) => stored[k] !== undefined).length;
 }
 
+/**
+ * 백업으로 들어온 번역 캐시 항목을 cacheKorean과 같은 규칙으로 줄인다(리뷰 1-16).
+ * 검사만 하고 저장하면 힌트 요소 타입·값 길이가 상한 없이 들어온다.
+ */
+function normalizeCachedKorean(value: unknown): CachedKorean | null {
+  if (typeof value !== "object" || value === null) return null;
+  const o = value as Record<string, unknown>;
+  if (typeof o.ko !== "string" || !o.ko.trim()) return null;
+  if (!Array.isArray(o.hints)) return null;
+  return {
+    ko: o.ko.slice(0, 600),
+    hints: o.hints
+      .filter((h): h is string => typeof h === "string")
+      .slice(0, 6)
+      .map((h) => h.slice(0, 40)),
+  };
+}
+
 /** 한국어 번역 캐시를 합친다(기본) 또는 대체한다. */
 export function importKoreanCache(value: unknown, replace = false): number {
   if (typeof window === "undefined") return 0;
-  const incoming = normalizeRecord(value, (k, v) => {
-    if (k.length === 0 || k.length > 80) return false;
-    if (typeof v !== "object" || v === null) return false;
-    const o = v as Record<string, unknown>;
-    return typeof o.ko === "string" && o.ko.length > 0 && Array.isArray(o.hints);
-  });
+  const incoming: Record<string, CachedKorean> = {};
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (k.length === 0 || k.length > 80) continue;
+      const normalized = normalizeCachedKorean(v);
+      if (normalized) incoming[k] = normalized;
+    }
+  }
   if (replace) {
     safeSetItem(KO_CACHE_KEY, JSON.stringify(trimKoreanCache(incoming)));
     notifyProgressOnce();

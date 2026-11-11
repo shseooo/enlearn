@@ -12,15 +12,15 @@ export default function WeeklyChart({
   today: string;
 }) {
   const max = Math.max(1, ...weeks.map((w) => w.count));
-  const summary = weeks
-    .map((w) => `${w.label}주 ${w.count}문장${w.count ? ` 평균 ${w.avgScore}점` : ""}`)
-    .join(", ");
+  const summaryId = "weekly-chart-summary";
 
   return (
     <div>
       <ul
-        role="img"
-        aria-label={`주간 연습량 그래프: ${summary}`}
+        // ⚠️ role="img"를 주면 하위가 표현용(presentational)이 되어 주별
+        // aria-label이 읽히지 않는다. 목록 그대로 두고 설명은 describedby로 준다(리뷰 1-18).
+        aria-label="주간 연습량"
+        aria-describedby={summaryId}
         className="flex items-stretch gap-1"
       >
         {weeks.map((w) => {
@@ -59,7 +59,7 @@ export default function WeeklyChart({
           );
         })}
       </ul>
-      <p className="mt-2 text-xs text-slate-400">
+      <p id={summaryId} className="mt-2 text-xs text-slate-400">
         막대는 그 주에 연습한 문장 수, 아래 숫자는 평균 점수입니다. 진한 막대는
         진행 중인 주입니다.
       </p>

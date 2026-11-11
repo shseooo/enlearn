@@ -1,7 +1,8 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import Home from "../page";
+import { logPractice } from "@/lib/practice";
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -78,5 +79,31 @@ describe("앱 셸", () => {
     render(<Home />);
     expect(screen.getByText(/CC-BY 2\.0/)).toBeInTheDocument();
     expect(screen.getByText(/Project Gutenberg/)).toBeInTheDocument();
+  });
+
+  it("저장 실패 안내는 복습 탭이 아닌 곳에서도 보인다 (리뷰 1-8)", async () => {
+    render(<Home />);
+    const user = userEvent.setup();
+    // 쓰기가 일어나는 탭(번역 연습)에 머물러 있다.
+    await user.click(screen.getByRole("tab", { name: /번역 연습/ }));
+
+    const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError", "QuotaExceededError");
+    });
+    act(() => {
+      logPractice({
+        lane: "classic",
+        en: "A sentence that cannot be stored.",
+        ko: "저장되지 않는 문장.",
+        answer: "attempt",
+        score: 55,
+        corrections: [],
+      });
+    });
+    spy.mockRestore();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /저장 공간이 가득 찼습니다/,
+    );
   });
 });

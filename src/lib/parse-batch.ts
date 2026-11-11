@@ -17,9 +17,7 @@ export interface BatchTranslation {
 }
 
 import { extractJson } from "./json.ts";
-
-// 한글 자모(3130–318E)와 완성형 음절(AC00–D7A3) 둘 다 본다
-const HANGUL = /[\u3130-\u318e]|[\uac00-\ud7a3]/;
+import { hasHangul } from "../../scripts/lib/foreign-text.ts";
 
 /** corpus-tools.normalizeKey와 같은 규칙 (스크립트의 캐시 키와 맞아야 한다) */
 function keyOf(text: string): string {
@@ -83,7 +81,7 @@ export function parseTranslationBatch(
     const ko = typeof o.ko === "string" ? o.ko.trim() : "";
     // "네." 성의 없는 번역이 코퍼스에 들어가면 화면이 이상해진다. 구두점 빼고 3자 이상.
     const compact = ko.replace(/[\s.,!?…"'“”‘’()\[\]·\-]/g, "");
-    if (!HANGUL.test(ko) || compact.length < 2) continue;
+    if (!hasHangul(ko) || compact.length < 2) continue;
 
     const rawIndex = o.i ?? o.index ?? o.n;
     const hasIndex = typeof rawIndex === "number" && Number.isInteger(rawIndex);
