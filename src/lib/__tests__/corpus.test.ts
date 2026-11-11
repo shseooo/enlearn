@@ -2,9 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cacheKorean,
   clearCorpusCache,
+  clearKoreanCache,
   getCachedCorpus,
   getCachedKorean,
+  getProgressServerSnapshot,
+  getProgressSnapshot,
   isSeen,
+  koreanCacheCount,
   loadCorpus,
   loadSeen,
   markSeen,
@@ -168,6 +172,21 @@ describe("푼 기록", () => {
 });
 
 describe("동화 문장의 한국어 캐시", () => {
+  it("번역 캐시 개수를 세고 레인별로 지울 수 있다", () => {
+    cacheKorean("classic:alice", "안녕.", ["hello"]);
+    cacheKorean("classic:oz", "잘 가.", ["bye"]);
+    cacheKorean("daily:x", "그래?", ["really"]);
+    expect(koreanCacheCount()).toBe(3);
+    expect(koreanCacheCount("classic")).toBe(2);
+
+    clearKoreanCache("classic");
+    expect(koreanCacheCount("classic")).toBe(0);
+    expect(koreanCacheCount("daily")).toBe(1);
+
+    clearKoreanCache();
+    expect(koreanCacheCount()).toBe(0);
+  });
+
   it("코퍼스에 한국어가 있으면 그대로, 없으면 캐시를 쓴다", () => {
     const withKo = entry({ ko: "이미 있는 한국어." });
     expect(resolveKorean(withKo)).toBe("이미 있는 한국어.");
@@ -179,6 +198,23 @@ describe("동화 문장의 한국어 캐시", () => {
     cacheKorean(key, "고양이가 매트 위에 앉아 있어요.", ["cat", "mat"]);
     expect(getCachedKorean(key)?.hints).toEqual(["cat", "mat"]);
     expect(resolveKorean(classic)).toBe("고양이가 매트 위에 앉아 있어요.");
+  });
+});
+
+describe("진행 상황 스냅샷 (설정 화면)", () => {
+  it("값이 바뀌기 전에는 같은 참조를 돌려준다", () => {
+    const first = getProgressSnapshot();
+    expect(getProgressSnapshot()).toBe(first);
+
+    markSeen("daily:x");
+    const second = getProgressSnapshot();
+    expect(second).not.toBe(first);
+    expect(second.daily).toBe(1);
+  });
+
+  it("서버 스냅샷은 항상 같은 0 값", () => {
+    expect(getProgressServerSnapshot()).toBe(getProgressServerSnapshot());
+    expect(getProgressServerSnapshot()).toEqual({ daily: 0, classic: 0, korean: 0 });
   });
 });
 

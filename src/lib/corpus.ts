@@ -126,6 +126,7 @@ export function markSeen(key: string): void {
   const seen = loadSeen();
   seen[key] = new Date().toISOString();
   window.localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
+  notifyProgress();
 }
 
 export function isSeen(key: string): boolean {
@@ -143,6 +144,7 @@ export function resetSeen(lane?: CorpusLane): void {
       : [],
   );
   window.localStorage.setItem(SEEN_KEY, JSON.stringify(kept));
+  notifyProgress();
 }
 
 export function seenCount(lane?: CorpusLane): number {
@@ -286,6 +288,81 @@ export function cacheKorean(key: string, ko: string, hints: string[]): void {
   const store = readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
   store[key] = { ko, hints };
   window.localStorage.setItem(KO_CACHE_KEY, JSON.stringify(store));
+  notifyProgress();
+}
+
+/** 캐시된 한국어 번역 개수 (설정 화면 표시용) */
+export function koreanCacheCount(lane?: CorpusLane): number {
+  return Object.keys(
+    readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {}),
+  ).filter((k) => !lane || k.startsWith(`${lane}:`)).length;
+}
+
+/**
+ * 한국어 번역 캐시를 지운다. lane을 주면 그 레인만, 생략하면 전체.
+ * 엉터리/환각 번역이 한 번 캐시되면 다시 볼 수 없으므로 초기화 수단이 필요하다.
+ */
+export function clearKoreanCache(lane?: CorpusLane): void {
+  if (typeof window === "undefined") return;
+  const store = readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
+  const kept = lane
+    ? Object.fromEntries(
+        Object.entries(store).filter(([k]) => !k.startsWith(`${lane}:`)),
+      )
+    : {};
+  window.localStorage.setItem(KO_CACHE_KEY, JSON.stringify(kept));
+  notifyProgress();
+}
+
+// ---------------------------------------------------------------------------
+// 진행 상황 스냅샷 (useSyncExternalStore용) — 설정 화면에 개수를 보여준다
+// ---------------------------------------------------------------------------
+
+const PROGRESS_EVENT = "enlearn:progress-changed";
+
+export interface ProgressCounts {
+  daily: number;
+  classic: number;
+  korean: number;
+}
+
+const EMPTY_PROGRESS: ProgressCounts = { daily: 0, classic: 0, korean: 0 };
+let progressRaw = "";
+let progressValue: ProgressCounts = EMPTY_PROGRESS;
+
+function notifyProgress(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(PROGRESS_EVENT));
+}
+
+export function subscribeToProgress(callback: () => void): () => void {
+  window.addEventListener("storage", callback); // 다른 탭 변경
+  window.addEventListener(PROGRESS_EVENT, callback);
+  return () => {
+    window.removeEventListener("storage", callback);
+    window.removeEventListener(PROGRESS_EVENT, callback);
+  };
+}
+
+/** 값이 바뀐 뒤에야 새 참조를 돌려준다 (무한 재렌더 방지) */
+export function getProgressSnapshot(): ProgressCounts {
+  const raw = `${window.localStorage.getItem(SEEN_KEY) ?? ""}|${
+    window.localStorage.getItem(KO_CACHE_KEY) ?? ""
+  }`;
+  if (raw !== progressRaw) {
+    progressRaw = raw;
+    progressValue = {
+      daily: seenCount("daily"),
+      classic: seenCount("classic"),
+      korean: koreanCacheCount(),
+    };
+  }
+  return progressValue;
+}
+
+/** SSR/하이드레이션용: 항상 같은 참조를 돌려주는 0 값 */
+export function getProgressServerSnapshot(): ProgressCounts {
+  return EMPTY_PROGRESS;
 }
 
 /** 화면에 쓸 한국어 문장: 코퍼스에 있으면 그대로, classic이면 캐시된 LLM 번역 */

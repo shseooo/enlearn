@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { LLMSettings } from "@/lib/types";
 import { checkHost, testConnection } from "@/lib/llm";
+import ProgressReset from "./progress-reset";
 
 interface SettingsTabProps {
   settings: LLMSettings;
@@ -205,11 +206,13 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
             <p className="mt-1 text-xs text-rose-500">
               대부분의 원인은 잘못된 Host/Model/API Key, 호스트의 CORS 비지원,
               또는 OpenAI 호환이 아닌 응답 형식입니다. 에러 메시지에 표시되는
-              실제 응답 내용을 확인해 보세요.
+              실제 응답 내용을 확인해 보세요. (API 키 같은 값은 가려서 표시됩니다)
             </p>
           </div>
         )}
       </div>
+
+      <ProgressReset />
     </div>
   );
 }

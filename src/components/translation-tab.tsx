@@ -16,6 +16,7 @@ import {
 } from "@/lib/llm";
 import {
   cacheKorean,
+  LANE_LABELS,
   loadCorpus,
   markSeen,
   pickEntry,
@@ -31,9 +32,10 @@ import { SettingsWarning } from "./free-writing-tab";
 /** 문장 출처: 코퍼스(사람이 쓴 문장) 또는 AI 생성 */
 type SourceMode = CorpusLane | "ai";
 
+// 코퍼스 레인 이름은 corpus.ts의 LANE_LABELS를 그대로 쓴다 (이중 정의 방지)
 const MODE_LABELS: Record<SourceMode, string> = {
-  daily: "💬 일상 회화 (Tatoeba)",
-  classic: "📖 동화 명문장 (책)",
+  daily: `${LANE_LABELS.daily} (Tatoeba)`,
+  classic: `${LANE_LABELS.classic} (책)`,
   ai: "✨ AI가 문장 만들기",
 };
 
