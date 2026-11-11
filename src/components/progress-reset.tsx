@@ -2,6 +2,7 @@
 
 import { useState, useSyncExternalStore } from "react";
 import {
+  batchProgress,
   clearKoreanCache,
   getProgressServerSnapshot,
   getProgressSnapshot,
@@ -11,6 +12,7 @@ import {
 } from "@/lib/corpus";
 import type { CorpusLane } from "@/lib/types";
 import {
+  batchPractice,
   clearLog,
   clearSrs,
   getPracticeServerSnapshot,
@@ -38,8 +40,11 @@ export default function ProgressReset() {
   const [message, setMessage] = useState<string | null>(null);
 
   function resetPractice(what: "log" | "srs" | "both") {
-    if (what !== "srs") clearLog();
-    if (what !== "log") clearSrs();
+    // 한 동작이 두 저장소를 바꾼다 — 백업 경로와 같은 묶음 쓰기로 알림을 한 번만 낸다(리뷰 3-14).
+    batchPractice(() => {
+      if (what !== "srs") clearLog();
+      if (what !== "log") clearSrs();
+    });
     setMessage(
       what === "log"
         ? "연습 기록(점수·자주 틀리는 표현)을 지웠습니다."
@@ -50,8 +55,10 @@ export default function ProgressReset() {
   }
 
   function reset(lane: CorpusLane | "all", what: "seen" | "korean" | "both") {
-    if (what !== "korean") resetSeen(lane === "all" ? undefined : lane);
-    if (what !== "seen") clearKoreanCache(lane === "all" ? undefined : lane);
+    batchProgress(() => {
+      if (what !== "korean") resetSeen(lane === "all" ? undefined : lane);
+      if (what !== "seen") clearKoreanCache(lane === "all" ? undefined : lane);
+    });
     const scope = lane === "all" ? "전체" : LANE_LABELS[lane];
     setMessage(
       what === "seen"

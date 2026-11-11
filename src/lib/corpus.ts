@@ -515,12 +515,33 @@ export function exportKoreanCache(): Record<string, CachedKorean> {
   return out;
 }
 
+/**
+ * seen의 값은 "본 시각"이다. trimSeen이 그 문자열 순서로 오래된 항목부터 버리기
+ * 때문에, 형식 밖의 값("asdf" 같은)이 섞이면 살아남아야 할 최근 문장이 먼저 밀려난다.
+ * 다른 저장소(log/srs/번역 캐시)는 값을 검사하므로 seen만 예외였다(리뷰 3-6).
+ */
+const SEEN_DATE_PREFIX = /^\d{4}-\d{2}-\d{2}T/;
+const MAX_SEEN_DATE_CHARS = 40;
+
+/** 값이 문자열이 아니면 항목을 버린다. 형식 밖의 시각은 "방금 본 것"으로 바로잡는다. */
+function normalizeSeenValue(value: unknown, nowIso: string): string | null {
+  if (typeof value !== "string") return null;
+  if (SEEN_DATE_PREFIX.test(value) && value.length <= MAX_SEEN_DATE_CHARS) return value;
+  return nowIso;
+}
+
 /** 받은 문장 기록을 합친다(기본) 또는 대체한다. 잘못된 항목은 걸러낸다. */
 export function importSeen(value: unknown, replace = false): number {
   if (typeof window === "undefined") return 0;
-  const incoming = normalizeRecord(value, (k, v) =>
-    k.length > 0 && k.length <= 80 && typeof v === "string",
-  );
+  const nowIso = new Date().toISOString();
+  const incoming: SeenMap = {};
+  if (isPlainObject(value)) {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (k.length === 0 || k.length > 80) continue;
+      const seenAt = normalizeSeenValue(v, nowIso);
+      if (seenAt !== null) incoming[k] = seenAt;
+    }
+  }
   if (replace) {
     safeSetItem(SEEN_KEY, JSON.stringify(trimSeen(incoming)));
     notifyProgressOnce();
@@ -574,16 +595,4 @@ export function importKoreanCache(value: unknown, replace = false): number {
   notifyProgressOnce();
   const stored = readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
   return Object.keys(incoming).filter((k) => stored[k] !== undefined).length;
-}
-
-function normalizeRecord(
-  value: unknown,
-  accept: (key: string, value: unknown) => boolean,
-): Record<string, never> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof k === "string" && accept(k, v)) out[k] = v;
-  }
-  return out as Record<string, never>;
 }

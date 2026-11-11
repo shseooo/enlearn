@@ -530,6 +530,14 @@ function notifyPractice(): void {
  */
 let midnightTimer: ReturnType<typeof setTimeout> | null = null;
 let midnightScheduledForDay: string | undefined = undefined;
+/** 자정 예약은 구독자를 센다. 마지막 구독이 풀리면 타이머도 함께 끊는다(리뷰 3-8). */
+let practiceSubscribers = 0;
+
+function cancelMidnightNotify(): void {
+  if (midnightTimer !== null) clearTimeout(midnightTimer);
+  midnightTimer = null;
+  midnightScheduledForDay = undefined;
+}
 
 function scheduleMidnightNotify(): void {
   if (typeof window === "undefined") return;
@@ -548,12 +556,18 @@ function scheduleMidnightNotify(): void {
 }
 
 export function subscribeToPractice(callback: () => void): () => void {
+  practiceSubscribers += 1;
   scheduleMidnightNotify(); // 자정에 저장이 바뀌지 않아도 다시 계산하게 한다(리뷰 2-9)
   window.addEventListener("storage", callback); // 다른 탭 변경
   window.addEventListener(CHANGE_EVENT, callback);
+  let released = false;
   return () => {
+    if (released) return; // 같은 cleanup을 두 번 불러 카운트가 깨지지 않게 한다
+    released = true;
     window.removeEventListener("storage", callback);
     window.removeEventListener(CHANGE_EVENT, callback);
+    practiceSubscribers -= 1;
+    if (practiceSubscribers === 0) cancelMidnightNotify();
   };
 }
 
@@ -668,7 +682,9 @@ function sanitizeRecord(value: unknown): PracticeRecord | null {
           return { original: clip(x.original), better: clip(x.better) };
         })
         .filter((c): c is CorrectionNote => c !== null)
-        .slice(0, 20)
+        // 하드코딩한 20개를 쓰면 loadLog()가 5개로 잘라 읽은 뒤 다음 쓰기가 남은
+        // 교정을 지워버린다 — "저장한 개수 = 읽히는 개수"로 맞춘다(리뷰 3-7).
+        .slice(0, MAX_CORRECTIONS)
     : [];
   const scoreRaw = typeof o.score === "number" ? o.score : Number(o.score);
   const tsRaw = typeof o.ts === "number" ? o.ts : Number(o.ts);

@@ -1,11 +1,15 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 import {
+  MIN_RETAIN_RATIO,
   balanceByDifficulty,
+  chatEndpoint,
+  describeWriteProblem,
+  fetchBytes,
   requestChatOnce,
   shouldFlushTranslationCache,
   TRANSLATION_CACHE_FLUSH_BATCHES,
@@ -109,6 +113,102 @@ describe("빌드 스크립트 순수 함수 (리뷰 3-7)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// 코퍼스 파일 덮어쓰기 안전망 (리뷰 3-1)
+// ---------------------------------------------------------------------------
+
+describe("describeWriteProblem — 쓰기 직전의 안전망", () => {
+  const FILE = "/tmp/classics.json";
+
+  it("수록 0개는 --force로도 쓰지 않는다", () => {
+    expect(describeWriteProblem("classic", FILE, 0, 1400, false)).toMatch(/수록 문장 0개/);
+    expect(describeWriteProblem("classic", FILE, 0, null, true)).toMatch(/수록 문장 0개/);
+  });
+
+  it("이전 대비 급감은 거부하고, --force로만 넘긴다", () => {
+    expect(describeWriteProblem("classic", FILE, 25, 1400, false)).toMatch(/급감/);
+    expect(describeWriteProblem("classic", FILE, 25, 1400, true)).toBeNull();
+  });
+
+  it("새 파일이거나 상한 이상이면 쓴다", () => {
+    expect(describeWriteProblem("classic", FILE, 1, null, false)).toBeNull();
+    expect(
+      describeWriteProblem(
+        "classic",
+        FILE,
+        Math.ceil(1400 * MIN_RETAIN_RATIO),
+        1400,
+        false,
+      ),
+    ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 내려받기 재시도 — 영구 실패(404/403)는 LLM 쪽과 같이 재시도하지 않는다 (리뷰 3-11)
+// ---------------------------------------------------------------------------
+
+describe("fetchBytes", () => {
+  it("404는 한 번만 시도하고 다음 URL로 넘어간다", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response("", { status: 404, statusText: "Not Found" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchBytes("https://gutenberg.example/pg11.txt")).rejects.toThrow(
+      /내려받기 실패: HTTP 404/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("503은 세 번 시도하되, 마지막 실패 뒤에는 기다리지 않는다", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async () =>
+        new Response("", { status: 503, statusText: "Service Unavailable" }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const attempt = fetchBytes("https://gutenberg.example/pg11.txt");
+      const assertion = expect(attempt).rejects.toThrow(/내려받기 실패: HTTP 503/);
+      await vi.runAllTimersAsync();
+      await assertion;
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 엔드포인트 정규화는 설정 화면과 같은 checkHost를 쓴다 (리뷰 3-12)
+// ---------------------------------------------------------------------------
+
+describe("chatEndpoint", () => {
+  it("host → /chat/completions 정규화가 화면 쪽과 같은 결과를 준다", () => {
+    expect(chatEndpoint("https://api.openai.com")).toBe(
+      "https://api.openai.com/v1/chat/completions",
+    );
+    expect(chatEndpoint("https://api.openai.com/v1/")).toBe(
+      "https://api.openai.com/v1/chat/completions",
+    );
+    expect(chatEndpoint("http://localhost:11434/v1")).toBe(
+      "http://localhost:11434/v1/chat/completions",
+    );
+    // 스킴 없는 입력은 fetch가 상대 경로로 해석하지 않게 보정한다
+    expect(chatEndpoint("api.openai.com")).toBe(
+      "https://api.openai.com/v1/chat/completions",
+    );
+  });
+
+  it("host가 깨지면 빌드 안내 문구로 실패한다", () => {
+    expect(() => chatEndpoint("")).toThrow(/ENLEARN_LLM_HOST/);
+  });
+});
+
 describe("난이도 배분", () => {
   const source = pool({ easy: 752, normal: 930, hard: 725 });
 
@@ -188,6 +288,88 @@ describe("빌드 진입점 — 실패를 안내로 끝낸다 (리뷰 2-6)", () =
       // 줄 번호·Node 배너는 사용자에게 다음 조치가 아니다
       expect(r.out).not.toMatch(/^\s+at /m);
       expect(r.out).not.toContain("Node.js v");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /** 사람 손으로 옮긴 한국어가 들어 있는 코퍼스 파일 하나를 만든다. */
+  function seedHumanCorpus(root: string, count: number): string {
+    mkdirSync(join(root, "public", "data", "corpus"), { recursive: true });
+    const path = join(root, "public", "data", "corpus", "classics.json");
+    const entries = Array.from({ length: count }, (_, i) => ({
+      lane: "classic",
+      en: `Committed sentence number ${i}.`,
+      ko: `사람이 옮긴 문장 ${i}번입니다.`,
+      hints: [],
+      difficulty: "normal",
+      source: "이상한 나라의 앨리스",
+      sourceId: "alice",
+    }));
+    writeFileSync(
+      path,
+      JSON.stringify({
+        lane: "classic",
+        generatedAt: "2026-01-01T00:00:00.000Z",
+        license: "public domain",
+        attribution: "테스트",
+        sources: [],
+        entries,
+      }),
+    );
+    return path;
+  }
+
+  it("원본을 하나도 받지 못한 빌드는 기존 classics.json을 덮지 않고 exit 1 (리뷰 3-1)", () => {
+    const root = mkdtempSync(join(tmpdir(), "enlearn-corpus-empty-"));
+    try {
+      const path = seedHumanCorpus(root, 1);
+      const before = readFileSync(path, "utf8");
+
+      const r = build(["--lane=classic", "--offline"], root);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain("수록 문장 0개");
+      expect(r.out).toContain("빌드를 멈춥니다");
+      expect(r.out).not.toContain("코퍼스 빌드 완료");
+      // 1,400문장이 들어 있는 유일한 추적 사본은 그대로다
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("수록이 급감하면 쓰지 않고, --force일 때만 쓴다 — 일부 책 실패는 exit 1로 남긴다 (리뷰 3-1)", () => {
+    const root = mkdtempSync(join(tmpdir(), "enlearn-corpus-drop-"));
+    try {
+      // 한 권의 원본만 캐시에 있다 → 25문장만 수록된다.
+      mkdirSync(join(root, ".corpus-cache"), { recursive: true });
+      const sentences = Array.from(
+        { length: 25 },
+        (_, i) =>
+          `The alice number ${i} walked slowly down the long hall and looked at the garden.`,
+      );
+      writeFileSync(
+        join(root, ".corpus-cache", "pg11.txt"),
+        [
+          "*** START OF THE PROJECT GUTENBERG EBOOK ALICE ***",
+          ...sentences,
+          "*** END OF THE PROJECT GUTENBERG EBOOK ALICE ***",
+        ].join("\n"),
+      );
+      const path = seedHumanCorpus(root, 100);
+      const before = readFileSync(path, "utf8");
+
+      const refused = build(["--lane=classic", "--offline"], root);
+      expect(refused.status).toBe(1);
+      expect(refused.out).toContain("급감했습니다");
+      expect(refused.out).toContain("--force");
+      expect(readFileSync(path, "utf8")).toBe(before);
+
+      const forced = build(["--lane=classic", "--offline", "--force"], root);
+      expect(JSON.parse(readFileSync(path, "utf8")).entries).toHaveLength(25);
+      // 내려받기가 일부 실패한 빌드는 "성공"으로 끝나지 않는다
+      expect(forced.status).toBe(1);
+      expect(forced.out).toContain("내려받지 못한 책 13권");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

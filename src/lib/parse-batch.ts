@@ -17,17 +17,8 @@ export interface BatchTranslation {
 }
 
 import { extractJson } from "./json.ts";
+import { normalizeKey } from "./corpus-tools.ts";
 import { hasHangul } from "../../scripts/lib/foreign-text.ts";
-
-/** corpus-tools.normalizeKey와 같은 규칙 (스크립트의 캐시 키와 맞아야 한다) */
-function keyOf(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[\u2018\u2019\u201c\u201d]/g, "")
-    .replace(/[^a-z0-9\u3130-\ud7ff\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 export function parseTranslationBatch(
   raw: string,
@@ -62,7 +53,9 @@ export function parseTranslationBatch(
   if (!items) return out;
 
   const byKey = new Map<string, string>();
-  expected.forEach((en, index) => byKey.set(keyOf(en), String(index)));
+  // 캐시 키와 같은 normalizeKey를 쓴다. 따로 구현을 두면 한 쪽만 어긋나도
+  // 번역 캐시가 조용히 전부 미스가 된다(리뷰 3-12).
+  expected.forEach((en, index) => byKey.set(normalizeKey(en), String(index)));
 
   // 식별자(i/en/sentence)가 단 하나도 없는 배열만 "순서대로"로 해석한다.
   const orderedOnly = items.every((item) => {
@@ -117,7 +110,7 @@ export function parseTranslationBatch(
     if (index < 0 || index >= expected.length) {
       const en =
         typeof o.en === "string" ? o.en : typeof o.sentence === "string" ? o.sentence : "";
-      const found = en ? byKey.get(keyOf(en)) : undefined;
+      const found = en ? byKey.get(normalizeKey(en)) : undefined;
       // 번호가 어긋났는데 원문 대조까지 실패하면 "자리가 이쯤이니 이 문장"으로
       // 추측하지 않는다. 엉뚱한 번역이 붙으면 코퍼스에 영구로 남는다.
       // 자릿수 대응은 "식별자가 하나도 없는 완전한 목록"일 때만 허용한다(순서 약속).

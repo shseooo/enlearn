@@ -5,6 +5,7 @@
  *   npm run corpus -- --lane=daily # 일상 회화만
  *   npm run corpus -- --offline    # 이미 받아둔 원문으로 다시 정제만
  *   npm run corpus -- --llm        # 동화 문장에 한국어 번역/힌트를 미리 입혀둠
+ *   npm run corpus -- --force      # 수록이 급감해도 기존 코퍼스 파일을 덮어씀(리뷰 3-1)
  *
  * 원본 내려받기는 .corpus-cache/ 에 저장하므로 재실행 시 네트워크를 쓰지 않는다.
  * 결과물은 public/data/corpus/{daily,classics}.json
@@ -32,6 +33,7 @@ import {
   stripWikisourceMarkup,
 } from "../src/lib/corpus-tools.ts";
 import { parseTranslationBatch } from "../src/lib/parse-batch.ts";
+import { checkHost } from "../src/lib/host.ts";
 import { isRetryableStatus } from "../src/lib/http-status.ts";
 import { hasHangul } from "./lib/foreign-text.ts";
 import { readJsonCache, writeJsonAtomically } from "./lib/json-file.ts";
@@ -93,6 +95,8 @@ const LANES: CorpusLane[] = (() => {
 })();
 const OFFLINE = argv.includes("--offline");
 const WITH_LLM = argv.includes("--llm");
+/** 기존 코퍼스 대비 수록이 급감해도 덮어쓰겠다고 명시한 실행 (리뷰 3-1) */
+const FORCE = argv.includes("--force");
 
 /** 숫자 아닌 값을 Number()로 바꾸면 NaN이 되어 밸런싱이 조용히 깨진다. */
 const positiveInt = (name: string, fallback: number): number => {
@@ -137,22 +141,24 @@ function decodeBytes(buf: Buffer): string {
   }
 }
 
-async function fetchBytes(url: string, attempts = 3): Promise<Buffer> {
+export async function fetchBytes(url: string, attempts = 3): Promise<Buffer> {
   let lastError = "알 수 없는 오류";
   for (let i = 0; i < attempts; i++) {
+    let retryable = true;
     try {
       const res = await fetch(url, {
         headers: { "User-Agent": UA },
         signal: AbortSignal.timeout(45_000),
       });
-      if (!res.ok) {
-        lastError = `HTTP ${res.status}`;
-      } else {
-        return Buffer.from(await res.arrayBuffer());
-      }
+      if (res.ok) return Buffer.from(await res.arrayBuffer());
+      lastError = `HTTP ${res.status}`;
+      // 404/403은 다시 시도해도 똑같이 실패한다 — LLM 쪽과 같은 판정을 쓴다(리뷰 3-11)
+      retryable = isRetryableStatus(res.status);
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e);
     }
+    if (!retryable) break;
+    if (i + 1 >= attempts) break; // 마지막 실패 뒤에는 헛되이 기다리지 않는다
     const wait = 1500 * (i + 1);
     console.log(`  ↻ 실패(${lastError}) ${wait}ms 후 재시도`);
     await sleep(wait);
@@ -181,6 +187,9 @@ async function cachedBytes(name: string, urls: string[]): Promise<Buffer> {
   }
   throw error ?? new Error(name);
 }
+
+/** 펼쳐진 크기 상한. 손상·교란된 zip 하나가 프로세스를 다 먹지 않게 한다(리뷰 3-10). */
+export const MAX_UNZIP_ENTRY_BYTES = 32 * 1024 * 1024;
 
 /**
  * 외부 프로그램 없이 zip을 푼다 (stored/deflate만 지원).
@@ -252,13 +261,23 @@ export function unzipEntries(buf: Buffer): { name: string; data: Buffer }[] {
     }
     const raw = buf.subarray(start, start + compSize);
     try {
-      out.push({ name, data: method === 8 ? inflateRawSync(raw) : raw });
+      out.push({
+        name,
+        data:
+          method === 8
+            ? inflateRawSync(raw, { maxOutputLength: MAX_UNZIP_ENTRY_BYTES })
+            : raw,
+      });
     } catch (e) {
-      throw new Error(
-        `zip 안의 ${name}을(를) 펼치지 못했습니다(파일이 손상되었습니다): ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
+      const reason = e instanceof Error ? e.message : String(e);
+      const code = (e as { code?: string })?.code;
+      // 압축은 작고 출력은 큰 항목(zip bomb)은 OOM 크래시 대신 안내로 끝난다
+      if (code === "ERR_BUFFER_TOO_LARGE" || /maxOutputLength/i.test(reason)) {
+        throw new Error(
+          `zip 안의 ${name}이(가) 비정상적으로 큽니다(펼친 크기 상한 ${MAX_UNZIP_ENTRY_BYTES}바이트 초과).`,
+        );
+      }
+      throw new Error(`zip 안의 ${name}을(를) 펼치지 못했습니다(파일이 손상되었습니다): ${reason}`);
     }
     off += 46 + nameLen + extraLen + commentLen;
   }
@@ -513,15 +532,24 @@ export async function requestChatOnce(
   }
 }
 
+/**
+ * host → /chat/completions 정규화는 설정 화면과 같은 checkHost를 쓴다(리뷰 3-12).
+ * 두 곳에 복제된 규칙 중 한 쪽만 어긋나면 빌드는 실패하고 안내는 어긋난 쪽에서 나온다.
+ */
+export function chatEndpoint(host: string): string {
+  const check = checkHost(host);
+  if (!check.ok) {
+    throw new Error(`ENLEARN_LLM_HOST가 올바르지 않습니다: ${check.message}`);
+  }
+  return check.endpoint;
+}
+
 async function requestChat(
   env: LlmEnv,
   messages: { role: string; content: string }[],
   maxTokens: number,
 ): Promise<string> {
-  const base = env.host.replace(/\/+$/, "");
-  const url = base.endsWith("/chat/completions")
-    ? base
-    : `${base.endsWith("/v1") ? base : `${base}/v1`}/chat/completions`;
+  const url = chatEndpoint(env.host);
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (env.apiKey) headers.Authorization = `Bearer ${env.apiKey}`;
   const body = {
@@ -682,6 +710,9 @@ const pgUrls = (id: number): string[] => [
   `https://gutenberg.pglaf.org/${id}/${id}-0.txt`,
 ];
 
+/** 내려받지 못해 건너뛴 책 (리뷰 3-1: 조용히 빠진 채 덮어쓰지 않게 알린다) */
+const failedBooks: string[] = [];
+
 async function downloadAll(): Promise<void> {
   if (LANES.includes("daily")) {
     console.log("· 일상 회화(Tatoeba) 내려받는 중…");
@@ -708,6 +739,7 @@ async function downloadAll(): Promise<void> {
         );
       } catch (e) {
         console.log(`  ✗ ${book.title}: ${e instanceof Error ? e.message : e}`);
+        failedBooks.push(book.title);
       }
     }
   }
@@ -802,6 +834,54 @@ function applyDifficultyAndHints(
   }
 }
 
+/**
+ * 코퍼스 파일을 자리에 덮어쓰기 전의 안전망 (리뷰 3-1).
+ *
+ * public/data/corpus/*.json은 사람이 옮긴 번역까지 담긴, 유일하게 추적되는 사본이다
+ * (.corpus-cache/는 gitignore). 내려받기가 전부 실패한 빌드가 그 자리를 빈 파일로
+ * 덮거나 수록 조합이 크게 바뀐 파일로 덮으면, 되돌릴 수단이 없다.
+ */
+export const MIN_RETAIN_RATIO = 0.5;
+
+/** 기존 파일의 entries 개수. 파일이 없거나 형식이 깨졌으면 null. */
+function existingEntryCount(path: string): number | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { entries?: unknown };
+    return Array.isArray(parsed.entries) ? parsed.entries.length : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 쓰기를 거부해야 할 이유를 돌려주고, 괜찮으면 null을 돌려준다.
+ * 0문장은 --force로도 쓸 수 없다. 기존 대비 급감은 --force로만 넘긴다.
+ */
+export function describeWriteProblem(
+  lane: CorpusLane,
+  path: string,
+  nextCount: number,
+  previousCount: number | null,
+  force: boolean,
+): string | null {
+  if (nextCount === 0) {
+    return (
+      `${lane}: 수록 문장 0개 — 원본을 하나도 받지 못했습니다. ${path}을(를) 빈 코퍼스로 덮지 않습니다. ` +
+      `네트워크를 확인한 뒤 다시 실행하거나, 원본을 .corpus-cache/에 받아두고 --offline 으로 다시 실행하세요.`
+    );
+  }
+  if (previousCount !== null && nextCount < previousCount * MIN_RETAIN_RATIO) {
+    const base =
+      `${lane}: 수록 문장이 ${previousCount}개 → ${nextCount}개로 급감했습니다 ` +
+      `(이전의 ${Math.round(MIN_RETAIN_RATIO * 100)}% 미만).`; // 기존 파일엔 사람 손으로 옮긴 번역이 있다
+    return force
+      ? null
+      : `${base} 내려받기가 일부 실패한 것은 아닌지 확인하세요. 의도된 결과라면 --force 로 다시 실행하세요.`;
+  }
+  return null;
+}
+
 async function main(): Promise<void> {
   await downloadAll();
 
@@ -856,18 +936,56 @@ async function main(): Promise<void> {
   };
 
   // 요청하지 않은 레인의 파일을 빈 내용으로 덮어쓰지 않는다
+  const writes: { lane: CorpusLane; path: string; body: string; count: number }[] = [];
   if (LANES.includes("daily")) {
-    writeFileSync(join(OUT_DIR, "daily.json"), JSON.stringify(dailyFile));
+    writes.push({
+      lane: "daily",
+      path: join(OUT_DIR, "daily.json"),
+      body: JSON.stringify(dailyFile),
+      count: dailyEntries.length,
+    });
   }
   if (LANES.includes("classic")) {
-    writeFileSync(join(OUT_DIR, "classics.json"), JSON.stringify(classicFile));
+    writes.push({
+      lane: "classic",
+      path: join(OUT_DIR, "classics.json"),
+      body: JSON.stringify(classicFile),
+      count: classicEntries.length,
+    });
   }
+
+  // 원본을 하나도 받지 못한 빌드가 사람 손으로 옮긴 번역을 빈 파일로 덮는다(리뷰 3-1).
+  // 어느 레인이든 거부하면 쓰기를 전부 멈춘다 — 반쯤 바뀐 코퍼스는 더 추적하기 어렵다.
+  const problems = writes
+    .map((w) =>
+      describeWriteProblem(w.lane, w.path, w.count, existingEntryCount(w.path), FORCE),
+    )
+    .filter((p): p is string => p !== null);
+  if (problems.length > 0) {
+    console.error("\n빌드를 멈춥니다 — 기존 코퍼스 파일은 그대로 둡니다:");
+    for (const problem of problems) console.error(`  ! ${problem}`);
+    process.exit(1);
+  }
+
+  for (const w of writes) writeFileSync(w.path, w.body);
 
   console.log("\n코퍼스 빌드 완료");
   console.log(`  💬 일상 회화: ${dailyEntries.length}문장 — ${summarize(dailyEntries)}`);
   console.log(`  (동화 후보 전체 ${classic.length}: ${summarize(classic)})`);
   console.log(`  📖 동화 명문장: ${classicEntries.length}문장 — ${summarize(classicEntries)}`);
   console.log(`  → ${join("public", "data", "corpus")}`);
+
+  // 일부 책이 빠진 채로 쓰였다면 "성공"으로 끝내지 않는다 (리뷰 3-1).
+  if (failedBooks.length > 0) {
+    console.log(
+      `\n! 내려받지 못한 책 ${failedBooks.length}권 — 이번 코퍼스는 일부 책 없이 만들어졌습니다.`,
+    );
+    for (const title of failedBooks) console.log(`  · ${title}`);
+    console.log(
+      "  네트워크를 확인한 뒤 다시 실행하거나, 원본을 .corpus-cache/에 받아두고 --offline 으로 다시 실행하세요.",
+    );
+    process.exit(1);
+  }
 }
 
 // 이 파일을 직접 실행할 때만 빌드를 돌린다 (테스트에서는 순수 함수만 가져온다)

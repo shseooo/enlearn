@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseTranslationBatch } from "../parse-batch";
+import { normalizeKey } from "../corpus-tools";
 
 const ENS = [
   "The rabbit hopped away quickly.",
@@ -123,6 +124,31 @@ describe("parseTranslationBatch", () => {
     );
     expect(map.size).toBe(1);
     expect(map.get(ENS[1])?.ko).toBe("앨리스 문장.");
+  });
+
+  it("원문 대조 키는 번역 캐시와 같은 normalizeKey다 — 별도 구현을 두지 않는다 (리뷰 3-12)", () => {
+    // 키 규칙이 한 글자만 어긋나도 1,400개 번역 캐시가 조용히 전부 미스가 된다.
+    // 파서가 쓰는 키가 캐시(builder·merge·audit)의 키와 같은지 직접 고정한다.
+    const sentences = [
+      "“What do you mean by that?” said the Caterpillar — very loudly, indeed!",
+    ];
+    expect(normalizeKey(ENS[2])).toBe(
+      normalizeKey('"What do you mean by that?" said the Caterpillar.'),
+    );
+
+    const map = parseTranslationBatch(
+      JSON.stringify({
+        items: [
+          {
+            i: 99,
+            en: "what do you mean by that said the caterpillar very loudly indeed",
+            ko: "모두가 묻는 말.",
+          },
+        ],
+      }),
+      sentences,
+    );
+    expect(map.get(sentences[0])?.ko).toBe("모두가 묻는 말.");
   });
 
   it("한국어가 아니거나 지나치게 짧은 번역은 폐기한다", () => {

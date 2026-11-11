@@ -122,6 +122,52 @@ describe("ProgressReset", () => {
     expect(loadLog()).toHaveLength(1);
   });
 
+  it("초기화 버튼은 여러 저장소를 바꿔도 알림을 한 번만 낸다 (리뷰 3-14)", async () => {
+    markSeen(entryKey(dailyEntry));
+    cacheKorean(entryKey(classicEntry), "왕이 하나 살았습니다.", ["king"]);
+    logPractice({
+      lane: "classic",
+      en: "A sentence logged for batching.",
+      ko: "기록된 문장.",
+      answer: "an attempt",
+      score: 70,
+      corrections: [],
+    });
+
+    // 백업 경로는 이미 묶여 있다(2차 리뷰 3-10). 같은 화면의 초기화 버튼도 같이 묶인다.
+    let progressEvents = 0;
+    let practiceEvents = 0;
+    const onProgress = () => {
+      progressEvents += 1;
+    };
+    const onPractice = () => {
+      practiceEvents += 1;
+    };
+    window.addEventListener("enlearn:progress-changed", onProgress);
+    window.addEventListener("enlearn:practice-changed", onPractice);
+
+    try {
+      render(<ProgressReset />);
+      const user = userEvent.setup();
+      await screen.findByRole("heading", { name: "연습 기록" });
+
+      await user.click(screen.getByRole("button", { name: /전체 초기화/ }));
+      expect(seenCount()).toBe(0);
+      expect(koreanCacheCount()).toBe(0);
+      expect(progressEvents).toBe(1); // 두 저장소를 바꿘다
+
+      await user.click(
+        screen.getByRole("button", { name: /연습 기록 \+ 복습 큐 초기화/ }),
+      );
+      expect(loadLog()).toHaveLength(0);
+      expect(srsCount()).toBe(0);
+      expect(practiceEvents).toBe(1); // 두 저장소를 바꿘다
+    } finally {
+      window.removeEventListener("enlearn:progress-changed", onProgress);
+      window.removeEventListener("enlearn:practice-changed", onPractice);
+    }
+  });
+
   it("기록 + 큐 초기화는 두 저장소만 비우고 seen·번역 캐시는 남긴다 (리뷰 2-13)", async () => {
     logPractice({
       lane: "classic",

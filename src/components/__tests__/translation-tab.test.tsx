@@ -223,6 +223,26 @@ describe("TranslationTab — 코퍼스 문장", () => {
     vi.unstubAllGlobals();
   });
 
+  it("코퍼스 목록을 읽지 못하면 사유를 오류 배너로 알려준다 (리뷰 3-13)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 404, statusText: "Not Found" }),
+    );
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.selectOptions(screen.getByLabelText(/문장 출처/), "classic");
+
+    // 목록만 비우고 사유를 삼키면, 사용자는 이유를 모른 채 "문장 받기"를 누른다
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /책 목록을 읽지 못했습니다/,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(/npm run corpus/);
+    const bookSelect = screen.getByLabelText(/책/);
+    expect(bookSelect).toHaveValue("all");
+    vi.unstubAllGlobals();
+  });
+
   it("출처를 바꾸면 이전 문장과 평가 카드가 함께 정리된다", async () => {
     prefillCorpus("daily", dailyFile);
     evaluateMock.mockResolvedValue({
@@ -498,6 +518,44 @@ describe("TranslationTab — 추가 질문 히스토리 격리 (리뷰 3-3)", ()
 
     expect(screen.queryByText(/왜 과거형이 어색해요\?/)).not.toBeInTheDocument();
     expect(screen.queryByText("현재형이 자연스럽습니다.")).not.toBeInTheDocument();
+  });
+
+  // 리뷰 3-9: 카드가 unmount되면 진행 중이던 추가 질문 요청도 끊어야 한다.
+  // 끊지 않으면 요청이 대기 예산(240초)까지 달리고 응답은 버려진다.
+  it("문장을 새로 받으면 진행 중이던 추가 질문 요청이 취소된다", async () => {
+    prefillCorpus("daily", dailyFile);
+    evaluateMock.mockResolvedValue({
+      score: 70,
+      feedback: "좋습니다.",
+      corrections: [],
+      betterExpression: "Tom looks really ill.",
+    });
+    let followUpSignal: AbortSignal | undefined;
+    // askFollowUp(settings, context, result, question, history, { signal })
+    followUpMock.mockImplementation(
+      (_s: unknown, _c: unknown, _r: unknown, _q: string, _h: unknown, opts?: { signal?: AbortSignal }) => {
+        followUpSignal = opts?.signal;
+        return new Promise(() => {}); // 절대 끝나지 않는 답변 — 취소되었는지만 확인한다
+      },
+    );
+
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await user.type(screen.getByLabelText(/내 영어 번역/), "Tom looked very sick.");
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+    await user.type(screen.getByLabelText("추가 질문"), "왜 어색해요?");
+    await user.click(screen.getByRole("button", { name: /질문하기/ }));
+    // 답변을 기다리는 중이다 (요청이 실제로 떠 있는지 확인)
+    await screen.findByText("답변을 받고 있어요...");
+    expect(followUpSignal?.aborted).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: /다시 받기/ }));
+    await screen.findByText("톰은 많이 아파 보여.");
+
+    // 평가 카드가 unmount됐다 — 남은 요청도 함께 끊긴다
+    expect(followUpSignal?.aborted).toBe(true);
   });
 
   it("문장을 새로 받아도 이전 질문이 남지 않는다", async () => {

@@ -57,24 +57,25 @@ let checkedLines = 0;
 let problems = 0;
 
 for (const file of files) {
-  const lines = readFileSync(locate(file), "utf8")
+  // 원본 줄을 유지한 채 순회한다. 빈 줄을 지운 뒤 인덱스를 파일 줄 번호로 쓰면
+  // 이 스크립트가 짚어주는 위치가 실제 줄과 어긋난다(리뷰 3-5).
+  readFileSync(locate(file), "utf8")
     .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  lines.forEach((line, index) => {
-    checkedLines++;
-    const ko = translationOf(line);
-    const foreign = foreignLetterRuns(ko, allowed);
-    const where = `${file}:${index + 1}`;
-    if (foreign.length > 0) {
-      problems++;
-      console.log(`${where} 외국어 문자 [${foreign.join(" | ")}] :: ${line.slice(0, 90)}`);
-    } else if (!hasHangul(ko)) {
-      problems++;
-      console.log(`${where} 한글 없음 :: ${line.slice(0, 90)}`);
-    }
-  });
+    .forEach((raw, index) => {
+      const line = raw.trim();
+      if (!line) return;
+      checkedLines++;
+      const ko = translationOf(line);
+      const foreign = foreignLetterRuns(ko, allowed);
+      const where = `${file}:${index + 1}`;
+      if (foreign.length > 0) {
+        problems++;
+        console.log(`${where} 외국어 문자 [${foreign.join(" | ")}] :: ${line.slice(0, 90)}`);
+      } else if (!hasHangul(ko)) {
+        problems++;
+        console.log(`${where} 한글 없음 :: ${line.slice(0, 90)}`);
+      }
+    });
 }
 
 console.log(`검사 완료: 파일 ${files.length}개 / 줄 ${checkedLines}개 / 문제 ${problems}건`);

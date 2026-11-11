@@ -421,6 +421,44 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     expect(seenCount()).toBe(MAX_SEEN);
   });
 
+  // 리뷰 3-6: trimSeen은 "본 시각" 문자열 순으로 오래된 것부터 버린다.
+  // 형식 밖의 값("asdf")이 섞이면 그 항목 뒤로 밀려, 살아가야 할 최근 문장이 먼저 버려진다.
+  it("형식 밖의 본 날짜는 지금 시각으로 바로잡는다", () => {
+    importSeen(
+      {
+        "classic:1:ok": "2026-01-01T00:00:00.000Z",
+        "classic:2:broken": "asdf",
+        "classic:3:empty": "",
+        "classic:4:number": 42,
+        "classic:5:huge": "x".repeat(400),
+      },
+      true,
+    );
+    const seen = loadSeen();
+    expect(seen["classic:1:ok"]).toBe("2026-01-01T00:00:00.000Z");
+    for (const key of ["classic:2:broken", "classic:3:empty", "classic:5:huge"]) {
+      expect(seen[key]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(seen[key].length).toBeLessThanOrEqual(40);
+    }
+    // 문자열이 아닌 값은 항목 자체를 버린다 (현행 규칙)
+    expect(seen["classic:4:number"]).toBeUndefined();
+  });
+
+  it("형식 밖의 값이 상한 트림에서 최근 항목을 밀어내지 않는다 (리뷰 3-6)", () => {
+    const bulk: Record<string, string> = {};
+    // 상한까지 오래된 항목으로 채우고, 형식 밖의 값을 하나 섞는다
+    for (let i = 0; i < MAX_SEEN; i++) {
+      bulk[`classic:${i}:k`] = "2020-01-01T00:00:00.000Z";
+    }
+    bulk["classic:newest:k"] = "asdf";
+    importSeen(bulk, true);
+
+    const seen = loadSeen();
+    expect(seenCount()).toBe(MAX_SEEN);
+    // 지금 시각으로 바로잡혔으므로 트림에서 살아남는다
+    expect(seen["classic:newest:k"]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
   it("저장이 실패하면 다음 읽기도 저장소의 이전 값을 본다 (파싱 캐시)", () => {
     markSeen("daily:1:kept");
     const before = window.localStorage.getItem("enlearn.seen.v2");

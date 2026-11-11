@@ -39,4 +39,30 @@ describe("useCancellable", () => {
     const { result } = renderHook(() => useCancellable());
     expect(() => act(() => result.current.cancel())).not.toThrow();
   });
+
+  // 리뷰 3-9: 화면이 unmount되면 진행 중이던 요청을 끊는다.
+  // 끊지 않으면 카드가 사라진 뒤에도 대기 예산(240초)까지 달려 비용만 나간다.
+  it("unmount되면 진행 중이던 호출이 취소된다", () => {
+    const { result, unmount } = renderHook(() => useCancellable());
+    const inFlight = result.current.begin();
+    expect(inFlight.signal.aborted).toBe(false);
+
+    act(() => unmount());
+
+    expect(inFlight.signal.aborted).toBe(true);
+  });
+
+  it("unmount 전에 cancel()한 호출은 그대로이고, 다시 마운트해도 새 호출이 동작한다", () => {
+    const first = renderHook(() => useCancellable());
+    const cancelled = first.result.current.begin();
+    act(() => first.result.current.cancel());
+    act(() => first.unmount());
+    expect(cancelled.signal.aborted).toBe(true);
+
+    const second = renderHook(() => useCancellable());
+    const next = second.result.current.begin();
+    expect(next.signal.aborted).toBe(false);
+    expect(next.isCurrent()).toBe(true);
+    act(() => second.unmount());
+  });
 });

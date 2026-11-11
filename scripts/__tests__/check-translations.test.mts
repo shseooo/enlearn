@@ -74,6 +74,21 @@ describe("check-translations.mts", () => {
     expect(r.out).toContain("한글 없음");
   });
 
+  it("빈 줄 뒤에도 실제 파일 줄 번호를 짚는다 (리뷰 3-5)", () => {
+    const root = workspace();
+    // 빈 줄을 지운 뒤 인덱스를 줄 번호로 쓰면, 안내가 앞줄을 가리켰다.
+    writeFileSync(
+      join(root, "mixed.txt"),
+      "0\t첫 줄은 정상입니다.\n\n1\tThis line has English text mixed in.\n",
+    );
+    const r = run(root, ["mixed.txt"]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain("mixed.txt:3");
+    expect(r.out).not.toContain("mixed.txt:2");
+    // 검사한 줄 수는 빈 줄를 세지 않는다
+    expect(r.out).toContain("줄 2개");
+  });
+
   it("파일 경로는 현재 위치와 .corpus-cache/ 아래에서 모두 찾는다", () => {
     const root = workspace();
     writeFileSync(

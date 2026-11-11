@@ -303,6 +303,44 @@ describe("화면 구독 스냅샷", () => {
       vi.useRealTimers();
     }
   });
+
+  // 리뷰 3-8: 자정 예약이 자기 자신을 무한히 다시 예약해서, 구독이 0명이 되어도 살아 있었다.
+  it("마지막 구독을 해제하면 자정 타이머도 함께 끊긴다", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 0, 5, 23, 30, 0));
+
+      let notified = 0;
+      const first = subscribeToPractice(() => {
+        notified += 1;
+      });
+      const second = subscribeToPractice(() => {});
+      const armed = vi.getTimerCount();
+      expect(armed).toBeGreaterThan(0);
+
+      first();
+      // 구독이 하나 남아 있으면 자정 예약도 그대로다
+      expect(vi.getTimerCount()).toBe(armed);
+
+      second();
+      // 마지막 구독이 풀리면 예약이 취소된다
+      expect(vi.getTimerCount()).toBe(armed - 1);
+
+      vi.advanceTimersByTime(60 * 60 * 1000); // 자정을 지나 1/6 00:30
+      expect(notified).toBe(0);
+
+      // 다시 구독하면 그 자리에서 자정 예약이 되살아난다
+      const third = subscribeToPractice(() => {
+        notified += 1;
+      });
+      expect(vi.getTimerCount()).toBe(1);
+      vi.advanceTimersByTime(24 * 60 * 60 * 1000); // 다음 자정 1/7 00:00
+      expect(notified).toBe(1);
+      third();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("주간 집계 (그래프)", () => {
@@ -421,6 +459,41 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
     const before = window.localStorage.getItem("enlearn.log.v1");
     expect(importLog([{ nope: 1 }, "x"])).toBe(0);
     expect(window.localStorage.getItem("enlearn.log.v1")).toBe(before);
+  });
+
+  // 리뷰 3-7: 백업 경로는 20개, 읽기는 5개였다. logPractice 한 번이 잘린 개수로
+  // 저장소를 다시 쓰면 백업에 있던 교정이 회복 불가능하게 사라진다.
+  it("저장한 교정 개수와 읽히는 교정 개수가 같다 (리뷰 3-7)", () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({
+      original: `goed${i}`,
+      better: `went${i}`,
+    }));
+    importLog(
+      [
+        {
+          date: today,
+          lane: "classic",
+          en: "A sentence restored with many corrections.",
+          ko: "교정이 많은 문장.",
+          answer: "a",
+          score: 70,
+          corrections: many,
+        },
+      ],
+      true,
+    );
+
+    const storedRaw = () =>
+      JSON.parse(window.localStorage.getItem("enlearn.log.v1") ?? "[]") as {
+        corrections: unknown[];
+      }[];
+    expect(loadLog()[0].corrections).toHaveLength(5);
+    expect(storedRaw()[0].corrections).toHaveLength(5);
+
+    // 다른 문장을 기록하면 배열 전체를 다시 쓴다 — 읽히지 않는 교정은 남아 있지 않다
+    logPractice(record({ en: "Another logged sentence entirely.", answer: "b" }));
+    expect(storedRaw()[0].corrections).toHaveLength(5);
+    expect(loadLog()[0].corrections).toHaveLength(5);
   });
 
   it("복습 큐 병합은 이미 멀리까지 간 항목을 남긴다", () => {

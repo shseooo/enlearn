@@ -111,8 +111,14 @@ export default function TranslationTab({
       .then((file) => {
         if (alive) setSources(sourcesOf(file));
       })
-      .catch(() => {
-        if (alive) setSources([]);
+      .catch((e: unknown) => {
+        if (!alive) return;
+        setSources([]);
+        // 목록만 비우고 사유를 삼키면, 사용자는 이유를 모른 채 "문장 받기"를
+        // 눌러야 처음 오류를 본다. 화면의 다른 오류 경로와 같은 배너를 쓴다(리뷰 3-13).
+        setPickError(
+          `책 목록을 읽지 못했습니다 — ${e instanceof Error ? e.message : String(e)}`,
+        );
       });
     return () => {
       alive = false;

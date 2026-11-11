@@ -10,6 +10,7 @@
  *  - 각 줄 앞에 worklist 행 번호와 탭을 붙인다 → 병합할 때 번호로 대응을 확인한다.
  *      505\t두꺼비는 그냥 마음을 놓았다.
  *    번호가 한 줄이라도 어긋나면 파일 전체를 거부한다(순서가 밀리면 모든 번역이 엉뚱한 문장에 붙는다).
+ *    번호가 없는 줄도 거부한다 — 빈 줄·탭 대신 쓴 공백은 순서를 밀지만 확인할 방법이 없다(리뷰 3-2).
  *  - 파일 인자에는 시작 위치를 붙인다: <파일>#<worklist 시작 행(0-based)>
  *
  * 사용:
@@ -66,7 +67,7 @@ function readWorklist(): WorklistRow[] {
     });
 }
 
-/** 원고 한 줄 → { worklist 번호(없으면 null), 번역 } */
+/** 원고 한 줄 → { worklist 번호, 번역 }. 번호가 없으면 null. */
 function parseManuscriptLine(line: string): { rowNumber: number | null; ko: string } {
   const match = line.match(/^(\d+)\t(.*)$/);
   if (match) return { rowNumber: Number(match[1]), ko: match[2].trim() };
@@ -108,7 +109,16 @@ for (const arg of process.argv.slice(2)) {
 
   // 줄에 적힌 번호가 작업 목록 위치와 같은지 확인한다.
   manuscript.forEach((line, i) => {
-    if (line.rowNumber === null) return; // 번호 없는 원고는 순서만 믿는다
+    if (line.rowNumber === null) {
+      // 빈 줄을 지웠으니 "번호 없는 줄만 믿는다"로는 원고 중간 빈 줄 한 줄이
+      // 모든 번역을 한 칸 어긋나게 만드는 것을 잡지 못한다. 탭 대신 공백을 쓴
+      // 줄도 같은 경로로 어긋난다. 헤더가 약속한 형식이므로 거부한다(리뷰 3-2).
+      console.error(
+        `${path} ${i + 1}번째 줄에 worklist 행 번호(<번호>\t)가 없습니다. ` +
+          `순서가 밀리면 모든 번역이 엉뚱한 문장에 붙으므로 파일을 통째로 거부합니다.`,
+      );
+      process.exit(1);
+    }
     if (line.rowNumber !== offset + i) {
       console.error(
         `${path} ${i + 1}번째 줄: 예상 번호는 ${offset + i}인데 ${line.rowNumber}라고 적혀 있습니다. ` +

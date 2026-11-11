@@ -157,6 +157,21 @@ describe("unzipEntries — 내려받은 zip (리뷰 1-17)", () => {
   it("EOCD가 없으면 읽을 수 없다고 말한다", () => {
     expect(() => unzipEntries(Buffer.from("not a zip file at all"))).toThrow(/EOCD/);
   });
+
+  it("펼친 지나는 비정상적으로 큰 항목은 OOM 크래시 대신 안내로 멈춘다 (리뷰 3-10)", () => {
+    // 압축은 작고 출력은 큰 항목(영지버섯 zip). 압축 크기만 검사하면 그대로 펼쳤다.
+    const zip = makeZip([
+      { name: "kor-eng.txt", data: Buffer.alloc(64 * 1024 * 1024), deflate: true },
+    ]);
+    expect(zip.length).toBeLessThan(500_000);
+    expect(() => unzipEntries(zip)).toThrow(/비정상적으로 큽니다/);
+  });
+
+  it("상한 안의 항목은 그대로 펼친다", () => {
+    const text2 = "Tom looks very sick.\t톰은 많이 아파 보여.\n".repeat(2000);
+    const zip = makeZip([{ name: "kor-eng.txt", data: Buffer.from(text2, "utf8"), deflate: true }]);
+    expect(unzipEntries(zip)[0].data.toString("utf8")).toBe(text2);
+  });
 });
 
 // ---------------------------------------------------------------------------

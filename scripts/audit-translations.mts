@@ -48,6 +48,24 @@ const corpus = readJson<{ entries: CorpusEntry[] }>(
   CORPUS_FILE,
   "먼저 npm run corpus -- --lane=classic --offline 으로 코퍼스를 만드세요.",
 );
+// entries가 없는 파일을 넘기면 아래 반복이 TypeError로 터져, 사용자는 한국어 안내 대신
+// 스택 트레이스를 본다(R2-6에서 고친 것과 같은 종류의 마무리 부족, 리뷰 3-3).
+if (typeof corpus !== "object" || corpus === null || !Array.isArray(corpus.entries)) {
+  console.error(
+    `코퍼스 파일 형식이 올바르지 않습니다: ${CORPUS_FILE} — "entries" 배열이 필요합니다. ` +
+      `npm run corpus -- --lane=classic --offline 으로 다시 만드세요.`,
+  );
+  process.exit(1);
+}
+// 0문장 코퍼스는 "검사할 게 없다"가 아니라 코퍼스가 비었다는 신호다.
+// 사람 손으로 옮긴 번역이 들어 있던 자리를 빈 파일이 덮은 경우가 이 경로로 들어온다(리뷰 3-1).
+if (corpus.entries.length === 0) {
+  console.error(
+    `코퍼스에 문장이 없습니다: ${CORPUS_FILE} — 0문장으로는 감사를 통과시킬 수 없습니다. ` +
+      `코퍼스 빌드가 원본을 받지 못한 채 기존 파일을 덮었는지 확인하세요.`,
+  );
+  process.exit(1);
+}
 const cache = readJson<TranslationCache>(
   CACHE_FILE,
   "번역 캐시가 없습니다. node scripts/merge-translations.mts 로 원고를 합친 뒤 다시 실행하세요.",

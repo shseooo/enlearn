@@ -4,7 +4,7 @@
  * 동작하는지 여기서 고정한다. 실제 저장소를 건드리지 않게 임시 디렉터리에서 돌린다.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -132,6 +132,35 @@ describe("사전 번역 도구사슬", () => {
     const rejected = run(workspace, "merge-translations.mts", [".corpus-cache/ko/bad.txt#0"]);
     expect(rejected.status).toBe(1);
     expect(rejected.out).toContain("순서가 어긋났으므로 파일을 통째로 거부합니다");
+  });
+
+  it("번호 없는 원고는 거부한다 — 빈 줄 한 개가 순서를 미는 것을 잡는다 (리뷰 3-2)", () => {
+    const workspace = makeTrackedWorkspace();
+    run(workspace, "dump-untranslated.mts");
+    mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
+    // worklist 3행의 중간 빈 줄 하나: 번호가 없으면 순서가 밀려도 모른다.
+    writeFileSync(
+      join(workspace, ".corpus-cache", "ko", "plain.txt"),
+      "첫 문장 번역입니다.\n\n세 번째 문장 번역입니다.\n",
+    );
+    const rejected = run(workspace, "merge-translations.mts", [
+      ".corpus-cache/ko/plain.txt#0",
+    ]);
+    expect(rejected.status).toBe(1);
+    expect(rejected.out).toContain("worklist 행 번호");
+    // 거부된 원고는 캐시에 한 항목도 남기지 않는다
+    expect(existsSync(join(workspace, ".corpus-cache", "translations.json"))).toBe(false);
+
+    // 탭 대신 공백을 쓴 줄도 같은 경로(번호 없음)로 거부된다
+    writeFileSync(
+      join(workspace, ".corpus-cache", "ko", "spaced.txt"),
+      "0 첫 문장 번역입니다.\n",
+    );
+    const spaced = run(workspace, "merge-translations.mts", [
+      ".corpus-cache/ko/spaced.txt#0",
+    ]);
+    expect(spaced.status).toBe(1);
+    expect(spaced.out).toContain("worklist 행 번호");
   });
 
   it("원고에 다른 언어 문자가 섞이면 경고를 내놓는다", () => {
