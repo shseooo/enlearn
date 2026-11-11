@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import BackupCard from "../backup-card";
 import { loadLog, logPractice } from "@/lib/practice";
 import { saveSettings } from "@/lib/settings";
-import { BACKUP_APP } from "@/lib/backup";
+import { BACKUP_APP, buildBackup } from "@/lib/backup";
 
 const VALID = JSON.stringify({
   app: BACKUP_APP,
@@ -245,5 +245,37 @@ describe("BackupCard — 연결 설정 되돌리기 (3-1)", () => {
     expect(
       screen.queryByRole("checkbox", { name: /연결 설정도 되돌리기/ }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("BackupCard — 저장 실패 안내 (리뷰 3-9)", () => {
+  it("저장 공간이 가득 찼으면 조용히 넘어가지 않고 안내한다", async () => {
+    logPractice({
+      lane: "classic",
+      en: "Existing stored sentence.",
+      ko: "이미 저장된 문장.",
+      answer: "existing",
+      score: 60,
+      corrections: [],
+    });
+    const text = JSON.stringify(buildBackup(false));
+    const spy = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new DOMException("QuotaExceededError", "QuotaExceededError");
+      });
+
+    render(<BackupCard />);
+    const user = userEvent.setup();
+    await user.upload(
+      screen.getByLabelText(/백업 가져오기/),
+      new File([text], "enlearn-backup.json", { type: "application/json" }),
+    );
+    await user.click(screen.getByRole("button", { name: /지금 기록에 합치기/ }));
+
+    expect(
+      await screen.findByText(/저장 공간이 가득 찼습니다/),
+    ).toBeInTheDocument();
+    spy.mockRestore();
   });
 });

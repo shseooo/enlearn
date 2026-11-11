@@ -7,8 +7,15 @@
  *
  * ⚠️ API 키는 어떤 경우에도 백업에 담지 않는다. 호스트·모델 이름만 넣는다.
  */
-import { exportLog, importLog, importSrs, reviewItems } from "./practice";
 import {
+  batchPractice,
+  exportLog,
+  importLog,
+  importSrs,
+  reviewItems,
+} from "./practice";
+import {
+  batchProgress,
   clearKoreanCache,
   exportKoreanCache,
   exportSeen,
@@ -180,17 +187,23 @@ export function restoreBackup(
   replace = false,
   restoreSettings = false,
 ): RestoreResult {
-  if (replace) {
-    // import*(replace=true)가 빈 목록으로도 저장소를 비운다
-    clearKoreanCache();
-  }
-  const result: RestoreResult = {
-    log: importLog(file.data.log, replace),
-    srs: importSrs(file.data.srs, replace),
-    seen: importSeen(file.data.seen, replace),
-    koreanCache: importKoreanCache(file.data.koreanCache, replace),
-    settingsRestored: false,
-  };
+  // 여러 저장소를 한꺼번에 바꾼다. 알림이 저장소마다 여러 번 나면
+  // 화면이 몇 번씩 다시 그려진다(리뷰 3-10).
+  const result: RestoreResult = batchProgress(() =>
+    batchPractice(() => {
+      if (replace) {
+        // import*(replace=true)가 빈 목록으로도 저장소를 비운다
+        clearKoreanCache();
+      }
+      return {
+        log: importLog(file.data.log, replace),
+        srs: importSrs(file.data.srs, replace),
+        seen: importSeen(file.data.seen, replace),
+        koreanCache: importKoreanCache(file.data.koreanCache, replace),
+        settingsRestored: false,
+      };
+    }),
+  );
   if (restoreSettings && file.data.settings) {
     const current = loadSettings();
     // API 키는 백업에 없으므로 지금의 키를 그대로 둔다

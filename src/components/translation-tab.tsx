@@ -16,6 +16,7 @@ import {
   translateSentenceToKorean,
 } from "@/lib/llm";
 import {
+  batchProgress,
   cacheKorean,
   LANE_LABELS,
   loadCorpus,
@@ -209,8 +210,11 @@ export default function TranslationTab({
         const picked = await fetchFromCorpus(mode, signal);
         // 취소·출처 변경 뒤에 도착한 응답은 화면에도, 기록에도 손대지 않는다
         if (stale() || signal.aborted) return;
-        if (picked.fromLlm) cacheKorean(picked.key, picked.ko, picked.hints);
-        markSeen(picked.key);
+        // 번역 캐시 + 푼 문장 기록: 알림은 한 번만
+        batchProgress(() => {
+          if (picked.fromLlm) cacheKorean(picked.key, picked.ko, picked.hints);
+          markSeen(picked.key);
+        });
         setEntry(picked.item);
         setKorean(picked.ko);
         setHints(picked.hints);

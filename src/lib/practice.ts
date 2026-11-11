@@ -9,6 +9,7 @@
 import type { CorpusLane } from "./types";
 import { localDateString } from "./corpus";
 import { shortHash } from "./corpus-tools";
+import { safeSetItem } from "./storage";
 
 /** 코퍼스 레인 + 코퍼스가 아닌 경로(자유 작성 / AI 생성) */
 export type PracticeLane = CorpusLane | "free" | "ai";
@@ -28,6 +29,8 @@ const CHANGE_EVENT = "enlearn:practice-changed";
 const MAX_RECORDS = 400;
 const MAX_CORRECTIONS = 5;
 const MAX_TEXT = 400;
+/** 복습 큐 상한. 이걸 넘기면 가장 낮은 단계부터 밀어낸다. */
+export const MAX_SRS = 500;
 
 /** 복습 간격(일). stage가 오르면 다음 복습이 멀어진다. */
 export const REVIEW_INTERVALS = [1, 3, 7, 21, 45];
@@ -74,16 +77,24 @@ function readArray<T>(key: string): T[] {
 /** 알림 묶음: 한 동작이 여러 저장소를 바꿔도 화면은 한 번만 갱신한다 */
 let batchDepth = 0;
 
-function writeArray(key: string, value: unknown[]): void {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(key, JSON.stringify(value));
+function writeArray(key: string, value: unknown[]): boolean {
+  if (typeof window === "undefined") return false;
+  // 저장 실패(용량 초과 등)는 삼킨다. 예외가 이벤트 핸들러까지 번지면
+  // 화면이 멈추고, 그 이유가 "저장 공간"이라는 것을 사용자는 알 수 없다.
+  const ok = safeSetItem(key, JSON.stringify(value));
   if (batchDepth === 0) notifyPractice();
+  return ok;
 }
 
-function batch(fn: () => void): void {
+/** 묶음 쓰기: 연습 기록+SRS처럼 여러 저장소를 한 동작으로 바꿀 때 쓴다 */
+export function batchPractice<T>(fn: () => T): T {
+  return batch(fn);
+}
+
+function batch<T>(fn: () => T): T {
   batchDepth += 1;
   try {
-    fn();
+    return fn();
   } finally {
     batchDepth -= 1;
     if (batchDepth === 0) notifyPractice();
@@ -392,7 +403,7 @@ export function addForReview(item: {
     lapses: 0,
     lastReviewed: null,
   });
-  writeArray(SRS_KEY, queue);
+  writeArray(SRS_KEY, trimSrs(queue));
 }
 
 /** 오늘(또는 지난) 복습 문장. 오래된 것부터 나온다. */
@@ -664,6 +675,14 @@ function sanitizeSrs(value: unknown): SrsItem | null {
  * merge(기본): 같은 id·날짜는 새 값으로 바꾸고 나머지는 합친다.
  * replace: 기존 기록을 모두 지운다.
  */
+/** 큐가 상한을 넘으면 진척도가 낮은 것부터 밀어낸다 (새로 들어온 문장은 단계 0) */
+function trimSrs(queue: SrsItem[]): SrsItem[] {
+  if (queue.length <= MAX_SRS) return queue;
+  return [...queue]
+    .sort((a, b) => b.stage - a.stage || a.due.localeCompare(b.due))
+    .slice(0, MAX_SRS);
+}
+
 export function importLog(items: unknown[], replace = false): number {
   const incoming = items
     .map(sanitizeRecord)
@@ -681,7 +700,8 @@ export function importLog(items: unknown[], replace = false): number {
     (a, b) => a.date.localeCompare(b.date) || a.ts - b.ts,
   );
   writeArray(LOG_KEY, merged.slice(-MAX_RECORDS));
-  return incoming.length;
+  const wanted = new Set(incoming.map((r) => `${r.id}|${r.date}`));
+  return loadLog().filter((r) => wanted.has(`${r.id}|${r.date}`)).length;
 }
 
 /** 복습 큐를 불러온다. 병합할 때는 이미 멀리 미뤄진 쪽을 남겨 진행을 되돌리지 않는다. */
@@ -690,8 +710,8 @@ export function importSrs(items: unknown[], replace = false): number {
     .map(sanitizeSrs)
     .filter((x): x is SrsItem => x !== null);
   if (replace) {
-    writeArray(SRS_KEY, incoming);
-    return incoming.length;
+    writeArray(SRS_KEY, trimSrs(incoming));
+    return loadSrs().length;
   }
   if (!incoming.length) return 0;
   const byId = new Map<string, SrsItem>();
@@ -710,6 +730,7 @@ export function importSrs(items: unknown[], replace = false): number {
       : existing;
     byId.set(x.id, keep);
   }
-  writeArray(SRS_KEY, [...byId.values()]);
-  return incoming.length;
+  writeArray(SRS_KEY, trimSrs([...byId.values()]));
+  const ids = new Set(incoming.map((x) => x.id));
+  return loadSrs().filter((x) => ids.has(x.id)).length;
 }

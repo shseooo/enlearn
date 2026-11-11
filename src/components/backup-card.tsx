@@ -13,6 +13,7 @@ import {
   getPracticeSnapshot,
   subscribeToPractice,
 } from "@/lib/practice";
+import StorageWarning from "./storage-warning";
 
 /**
  * 연습 기록 백업/복원 카드.
@@ -83,6 +84,7 @@ export default function BackupCard() {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5">
       <h2 className="mb-1 text-base font-bold text-slate-800">백업 · 복구</h2>
+      <StorageWarning />
       <p className="mb-4 text-xs leading-relaxed text-slate-500">
         연습 기록과 복습 큐는 이 브라우저에만 있습니다. 다른 기기·브라우저로
         옮기려면 내보내기를, 되돌리려면 가져오기를 씁니다.{" "}

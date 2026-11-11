@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addDays,
   addForReview,
@@ -12,13 +12,14 @@ import {
   lastAnswerFor,
   loadLog,
   logPractice,
+  MAX_SRS,
   nextReviewDate,
   practiceId,
   practiceStats,
+  reviewItems,
   srsCount,
   importLog,
   importSrs,
-  reviewItems,
   subscribeToPractice,
   weeklySeries,
   REVIEW_INTERVALS,
@@ -448,5 +449,106 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
     expect(items[0].id).toBe("classic:j1");
     expect(items[0].stage).toBe(REVIEW_INTERVALS.length - 1);
     expect(items[0].lapses).toBe(0);
+  });
+});
+
+describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
+  const setItem = window.localStorage.setItem.bind(window.localStorage);
+
+  function failWrites(message = "QuotaExceededError") {
+    // 프로토타입을 잡는다: 모듈은 전역 localStorage를, 테스트는 window.localStorage를
+    // 참조하므로 한쪽만 스파이하면 다른 쪽이 조용히 성공한다.
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException(message, "QuotaExceededError");
+    });
+  }
+
+  function restoreWrites() {
+    vi.spyOn(Storage.prototype, "setItem").mockRestore();
+  }
+
+  it("저장이 실패해도 예외가 밖으로 새지 않고 이전 값이 남는다", () => {
+    logPractice({
+      lane: "classic",
+      en: "Keep me.",
+      ko: "남는 문장.",
+      answer: "keep me",
+      score: 70,
+      corrections: [],
+    });
+    const before = window.localStorage.getItem("enlearn.log.v1");
+    failWrites();
+    expect(() =>
+      logPractice({
+        lane: "classic",
+        en: "New sentence that cannot be stored.",
+        ko: "저장되지 않는 문장.",
+        answer: "nope",
+        score: 10,
+        corrections: [],
+      }),
+    ).not.toThrow();
+    expect(window.localStorage.getItem("enlearn.log.v1")).toBe(before);
+    restoreWrites();
+    setItem("enlearn.log.v1", before!);
+  });
+
+  it("백업으로 500개를 넘겨도 400개만 저장되고 실제 개수를 알려준다", () => {
+    const items = Array.from({ length: 500 }, (_, i) => ({
+      id: `bulk-${i}`,
+      date: `2026-01-${String((i % 28) + 1).padStart(2, "0")}`,
+      ts: 1_700_000_000_000 + i,
+      lane: "classic",
+      en: `Bulk sentence ${i}.`,
+      ko: `대량 기록 ${i}번 문장.`,
+      answer: "answer",
+      score: 50,
+      corrections: [],
+    }));
+    expect(importLog(items)).toBeLessThanOrEqual(400);
+    expect(practiceStats().total).toBe(400);
+  });
+
+  it("복습 큐는 상한을 넘지 않고, 진척도가 낮은 항목부터 밀려난다", () => {
+    const many = Array.from({ length: 600 }, (_, i) => ({
+      id: `queue-${i}`,
+      lane: "classic",
+      en: `Queued sentence ${i}.`,
+      ko: `복습 큐 ${i}번 문장.`,
+      stage: i < 500 ? 3 : 0,
+      due: "2026-06-01",
+      lapses: 0,
+      lastReviewed: null,
+    }));
+    const stored = importSrs(many);
+    expect(stored).toBeLessThanOrEqual(MAX_SRS);
+    const items = reviewItems();
+    expect(items.length).toBe(MAX_SRS);
+    expect(items.every((x) => x.stage === 3)).toBe(true);
+    // 새로 넣으려 해도 상한을 넘기지 않는다
+    addForReview({ id: "one-more", lane: "classic", en: "One more.", ko: "한 개 추가.", now: new Date() });
+    expect(reviewItems().length).toBe(MAX_SRS);
+  });
+
+  it("저장이 실패한 항목은 개수에 포함되지 않는다", () => {
+    const before = practiceStats().total;
+    failWrites();
+    expect(
+      importLog([
+        {
+          id: "unstored",
+          date: "2026-02-01",
+          ts: 1,
+          lane: "classic",
+          en: "Cannot store.",
+          ko: "저장 불가.",
+          answer: "x",
+          score: 1,
+          corrections: [],
+        },
+      ]),
+    ).toBe(0);
+    expect(practiceStats().total).toBe(before);
+    restoreWrites();
   });
 });

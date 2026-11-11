@@ -17,7 +17,9 @@ import {
   logPractice,
   practiceStats,
   reviewItems,
+  subscribeToPractice,
 } from "../practice";
+import { subscribeToProgress } from "../corpus";
 import {
   cacheKorean,
   exportKoreanCache,
@@ -422,5 +424,69 @@ describe("백업 파일 손상 대응", () => {
         parseBackup(JSON.stringify({ app: BACKUP_APP, version, data: { log: [], srs: [] } })),
       ).toThrow(/백업 버전/);
     }
+  });
+});
+
+describe("restoreBackup — 알림 묶음 (리뷰 3-10)", () => {
+  it("저장소마다 알림이 한 번만 나간다", () => {
+    const file = buildBackup(false);
+    file.data.log = [
+      {
+        id: "classic:b1",
+        date: "2026-01-05",
+        ts: 1,
+        lane: "classic",
+        en: "Restored one.",
+        ko: "복원된 한 문장.",
+        answer: "one",
+        score: 55,
+        corrections: [],
+      },
+      {
+        id: "classic:b2",
+        date: "2026-01-06",
+        ts: 2,
+        lane: "classic",
+        en: "Restored two.",
+        ko: "복원된 두 문장.",
+        answer: "two",
+        score: 65,
+        corrections: [],
+      },
+    ];
+    file.data.srs = [
+      {
+        id: "classic:b1",
+        lane: "classic",
+        en: "Restored one.",
+        ko: "복원된 한 문장.",
+        stage: 1,
+        due: "2026-02-01",
+        lapses: 0,
+        lastReviewed: null,
+      },
+    ];
+    file.data.seen = { "classic:1:aaa": "2026-01-05T00:00:00.000Z" };
+    file.data.koreanCache = {
+      "classic:1:aaa": { ko: "복원된 한 문장.", hints: ["one"] },
+    };
+
+    let practiceEvents = 0;
+    let progressEvents = 0;
+    const offPractice = subscribeToPractice(() => {
+      practiceEvents += 1;
+    });
+    const offProgress = subscribeToProgress(() => {
+      progressEvents += 1;
+    });
+
+    restoreBackup(file, false, false);
+    offPractice();
+    offProgress();
+
+    expect(practiceEvents).toBe(1);
+    expect(progressEvents).toBe(1);
+    expect(practiceStats().total).toBe(2);
+    expect(koreanCacheCount()).toBe(1);
   });
 });

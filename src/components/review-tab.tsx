@@ -21,6 +21,7 @@ import { useCancellable } from "@/lib/use-cancellable";
 import type { EvaluationResult, LLMSettings } from "@/lib/types";
 import SettingsWarning from "./settings-warning";
 import WeeklyChart from "./weekly-chart";
+import StorageWarning from "./storage-warning";
 
 const GRADES: { id: ReviewGrade; label: string; className: string }[] = [
   {
@@ -174,6 +175,7 @@ export default function ReviewTab({
 
   return (
     <div className="space-y-4">
+      <StorageWarning />
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="mb-3 text-base font-bold text-slate-800">
           📊 연습 현황

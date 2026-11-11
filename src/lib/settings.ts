@@ -1,4 +1,5 @@
 import type { LLMSettings } from "./types";
+import { safeSetItem } from "./storage";
 
 const STORAGE_KEY = "enlearn.settings";
 const CHANGE_EVENT = "enlearn:settings-changed";
@@ -38,7 +39,8 @@ export function loadSettings(): LLMSettings {
 /** 설정을 localStorage에 저장하고, 같은 탭의 구독자들에게 변경을 알린다. */
 export function saveSettings(settings: LLMSettings): void {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  // 용량 초과 등 저장 실패가 설정 화면을 멈추게 하지는 않는다
+  safeSetItem(STORAGE_KEY, JSON.stringify(settings));
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }
 

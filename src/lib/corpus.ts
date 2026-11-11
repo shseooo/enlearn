@@ -10,10 +10,34 @@ import type {
   Difficulty,
 } from "./types";
 import { entryKey } from "./corpus-tools";
+import { safeSetItem } from "./storage";
 
 // v2: entryKey가 해시 기반으로 바뀌어 v1 값은 재사용할 수 없다 (기록 초기화).
 const SEEN_KEY = "enlearn.seen.v2";
 const KO_CACHE_KEY = "enlearn.kocache.v2";
+
+/**
+ * 저장소 상한. 이 값들을 넘기면 브라우저 용량(보통 5MB)을 건드릴 수 있고,
+ * 그 경우 setItem이 던지는 예외가 클릭 핸들러까지 번진다.
+ */
+export const MAX_SEEN = 20_000;
+export const MAX_KOREAN_CACHE = 4_000;
+
+/** 푼 문장 기록: 오래된(가장 오래 안 본) 항목부터 버린다 */
+function trimSeen(seen: SeenMap): SeenMap {
+  const entries = Object.entries(seen);
+  if (entries.length <= MAX_SEEN) return seen;
+  return Object.fromEntries(
+    entries.sort((a, b) => String(b[1]).localeCompare(String(a[1]))).slice(0, MAX_SEEN),
+  );
+}
+
+/** 번역 캐시: JSON에 들어온 순서를 유지하고 앞쪽(오래된) 것부터 버린다 */
+function trimKoreanCache(store: Record<string, CachedKorean>): Record<string, CachedKorean> {
+  const entries = Object.entries(store);
+  if (entries.length <= MAX_KOREAN_CACHE) return store;
+  return Object.fromEntries(entries.slice(entries.length - MAX_KOREAN_CACHE));
+}
 
 export const CORPUS_URLS: Record<CorpusLane, string> = {
   daily: "/data/corpus/daily.json",
@@ -174,8 +198,8 @@ export function markSeen(key: string): void {
   if (typeof window === "undefined") return;
   const seen = loadSeen();
   seen[key] = new Date().toISOString();
-  window.localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
-  notifyProgress();
+  safeSetItem(SEEN_KEY, JSON.stringify(trimSeen(seen)));
+  notifyProgressOnce();
 }
 
 export function isSeen(key: string): boolean {
@@ -192,8 +216,8 @@ export function resetSeen(lane?: CorpusLane): void {
       ? Object.entries(seen).filter(([k]) => !k.startsWith(`${lane}:`))
       : [],
   );
-  window.localStorage.setItem(SEEN_KEY, JSON.stringify(kept));
-  notifyProgress();
+  safeSetItem(SEEN_KEY, JSON.stringify(kept));
+  notifyProgressOnce();
 }
 
 export function seenCount(lane?: CorpusLane): number {
@@ -352,9 +376,13 @@ export function getCachedKorean(key: string): CachedKorean | null {
 export function cacheKorean(key: string, ko: string, hints: string[]): void {
   if (typeof window === "undefined") return;
   const store = readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
-  store[key] = { ko, hints };
-  window.localStorage.setItem(KO_CACHE_KEY, JSON.stringify(store));
-  notifyProgress();
+  // 값 길이를 줄여 둔다. 이상한 번역이 길게 쌓이면 저장소를 통째로 차지한다.
+  store[key] = {
+    ko: ko.slice(0, 600),
+    hints: hints.slice(0, 6).map((h) => h.slice(0, 40)),
+  };
+  safeSetItem(KO_CACHE_KEY, JSON.stringify(trimKoreanCache(store)));
+  notifyProgressOnce();
 }
 
 /** 캐시된 한국어 번역 개수 (설정 화면 표시용) */
@@ -376,8 +404,8 @@ export function clearKoreanCache(lane?: CorpusLane): void {
         Object.entries(store).filter(([k]) => !k.startsWith(`${lane}:`)),
       )
     : {};
-  window.localStorage.setItem(KO_CACHE_KEY, JSON.stringify(kept));
-  notifyProgress();
+  safeSetItem(KO_CACHE_KEY, JSON.stringify(kept));
+  notifyProgressOnce();
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +427,24 @@ let progressValue: ProgressCounts = EMPTY_PROGRESS;
 function notifyProgress(): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new Event(PROGRESS_EVENT));
+}
+
+/** 묶음 쓰기: 한 동작이 여러 저장소를 바꿔도 알림은 한 번만 낸다 (리뷰 3-10) */
+let progressBatchDepth = 0;
+
+function notifyProgressOnce(): void {
+  if (progressBatchDepth === 0) notifyProgress();
+}
+
+export function batchProgress<T>(fn: () => T): T {
+  if (typeof window === "undefined") return fn();
+  progressBatchDepth += 1;
+  try {
+    return fn();
+  } finally {
+    progressBatchDepth -= 1;
+    if (progressBatchDepth === 0) notifyProgress();
+  }
 }
 
 export function subscribeToProgress(callback: () => void): () => void {
@@ -456,14 +502,16 @@ export function importSeen(value: unknown, replace = false): number {
     k.length > 0 && k.length <= 80 && typeof v === "string",
   );
   if (replace) {
-    window.localStorage.setItem(SEEN_KEY, JSON.stringify(incoming));
-    notifyProgress();
-    return Object.keys(incoming).length;
+    safeSetItem(SEEN_KEY, JSON.stringify(trimSeen(incoming)));
+    notifyProgressOnce();
+    return seenCount();
   }
-  const merged = { ...loadSeen(), ...incoming };
-  window.localStorage.setItem(SEEN_KEY, JSON.stringify(merged));
-  notifyProgress();
-  return Object.keys(incoming).length;
+  const merged = trimSeen({ ...loadSeen(), ...incoming });
+  safeSetItem(SEEN_KEY, JSON.stringify(merged));
+  notifyProgressOnce();
+  // 실제로 남은 개수만 알려준다 (상한으로 잘렸을 수 있다)
+  const stored = loadSeen();
+  return Object.keys(incoming).filter((k) => stored[k] !== undefined).length;
 }
 
 /** 한국어 번역 캐시를 합친다(기본) 또는 대체한다. */
@@ -476,15 +524,16 @@ export function importKoreanCache(value: unknown, replace = false): number {
     return typeof o.ko === "string" && o.ko.length > 0 && Array.isArray(o.hints);
   });
   if (replace) {
-    window.localStorage.setItem(KO_CACHE_KEY, JSON.stringify(incoming));
-    notifyProgress();
-    return Object.keys(incoming).length;
+    safeSetItem(KO_CACHE_KEY, JSON.stringify(trimKoreanCache(incoming)));
+    notifyProgressOnce();
+    return koreanCacheCount();
   }
   // 기존 캐시를 우선한다 (화면에 보여 이미 검증된 번역을 덮어쓰지 않는다)
-  const merged = { ...incoming, ...exportKoreanCache() };
-  window.localStorage.setItem(KO_CACHE_KEY, JSON.stringify(merged));
-  notifyProgress();
-  return Object.keys(incoming).length;
+  const merged = trimKoreanCache({ ...incoming, ...exportKoreanCache() });
+  safeSetItem(KO_CACHE_KEY, JSON.stringify(merged));
+  notifyProgressOnce();
+  const stored = readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
+  return Object.keys(incoming).filter((k) => stored[k] !== undefined).length;
 }
 
 function normalizeRecord(

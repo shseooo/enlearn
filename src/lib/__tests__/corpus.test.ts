@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  MAX_KOREAN_CACHE,
+  MAX_SEEN,
   cacheKorean,
   clearCorpusCache,
   clearKoreanCache,
@@ -8,16 +10,17 @@ import {
   getCachedKorean,
   getProgressServerSnapshot,
   getProgressSnapshot,
+  importSeen,
   isSeen,
   koreanCacheCount,
-  localDateString,
   loadCorpus,
   loadSeen,
+  localDateString,
   markSeen,
   pickEntry,
   prefillCorpus,
-  resolveKorean,
   resetSeen,
+  resolveKorean,
   seenCount,
   sourcesOf,
 } from "../corpus";
@@ -321,5 +324,50 @@ describe("코퍼스 요청 취소·타임아웃 (리뷰 3-2)", () => {
     await expect(loadCorpus("daily", controller.signal)).rejects.toThrow(/취소/);
     expect(spy).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
+  });
+});
+
+describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
+  it("번역 캐시 값 길이를 줄이고, 큐가 넘치면 오래된 것부터 버린다", () => {
+    cacheKorean("classic:1:long", "가".repeat(2000), Array.from({ length: 12 }, (_, i) => `힌트${i}가`.repeat(20)));
+    const cached = getCachedKorean("classic:1:long")!;
+    expect(cached.ko.length).toBe(600);
+    expect(cached.hints).toHaveLength(6);
+    expect(cached.hints[0].length).toBeLessThanOrEqual(40);
+
+    for (let i = 0; i < MAX_KOREAN_CACHE + 50; i++) {
+      cacheKorean(`classic:${i}:fill`, `채움 번역 ${i}번입니다.`, ["fill"]);
+    }
+    expect(koreanCacheCount()).toBe(MAX_KOREAN_CACHE);
+    // 가장 나중에 들어온 항목은 살아있다
+    expect(getCachedKorean(`classic:${MAX_KOREAN_CACHE + 49}:fill`)).not.toBeNull();
+  });
+
+  it("푼 문장 기록도 상한을 넘지 않는다", () => {
+    const bulk: Record<string, string> = {};
+    for (let i = 0; i < MAX_SEEN + 10; i++) {
+      bulk[`daily:${i}:k`] = `2026-01-0${(i % 5) + 1}T00:00:00.000Z`;
+    }
+    const accepted = importSeen(bulk, true);
+    expect(accepted).toBeLessThanOrEqual(MAX_SEEN);
+    expect(seenCount()).toBe(MAX_SEEN);
+  });
+
+  it("저장이 실패하면 가져온 개수는 0이고 이전 기록이 그대로 남는다", () => {
+    prefillCorpus("daily", file([entry({ en: "Stored before failure.", sourceId: "77" })]));
+    markSeen(entryKey({ lane: "daily", en: "Stored before failure.", sourceId: "77" } as CorpusEntry));
+    const before = seenCount();
+
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError", "QuotaExceededError");
+    });
+    expect(
+      importSeen({ "daily:9:zz": "2026-03-01T00:00:00.000Z" }, false),
+    ).toBe(0);
+    expect(() => markSeen("daily:10:yy")).not.toThrow();
+    vi.spyOn(Storage.prototype, "setItem").mockRestore();
+
+    expect(seenCount()).toBe(before);
+    expect(isSeen("daily:9:zz")).toBe(false);
   });
 });
