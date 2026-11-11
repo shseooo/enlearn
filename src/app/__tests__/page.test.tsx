@@ -11,7 +11,7 @@ describe("앱 셸", () => {
   it("탭은 tablist / tab / tabpanel 규칙을 따른다", () => {
     render(<Home />);
     expect(screen.getByRole("tablist")).toBeInTheDocument();
-    expect(screen.getAllByRole("tab")).toHaveLength(3);
+    expect(screen.getAllByRole("tab")).toHaveLength(4);
 
     expect(screen.getByRole("tab", { name: /자유 작성/ })).toHaveAttribute(
       "aria-selected",
@@ -58,6 +58,17 @@ describe("앱 셸", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("tab", { name: /번역 연습/ }),
     );
+  });
+
+  it("복습 탭 패널이 tabpanel 규칙으로 연결된다", async () => {
+    render(<Home />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: /복습/ }));
+    expect(screen.getByRole("tab", { name: /복습/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("tabpanel", { name: /복습/ })).toBeInTheDocument();
   });
 
   it("코퍼스 출처(라이선스)를 화면 하단에 표기한다", () => {

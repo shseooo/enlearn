@@ -2,7 +2,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import TranslationTab from "../translation-tab";
-import { clearCorpusCache, prefillCorpus } from "@/lib/corpus";
+import { clearCorpusCache, localDateString, prefillCorpus } from "@/lib/corpus";
+import { addDays } from "@/lib/practice";
 import type { CorpusFile } from "@/lib/types";
 
 const { generateMock, evaluateMock, translateMock } = vi.hoisted(() => ({
@@ -251,7 +252,69 @@ describe("TranslationTab — 코퍼스 문장", () => {
   });
 });
 
-describe("TranslationTab — AI 생성 (기존 방식)", () => {
+describe("TranslationTab — 연습 기록 연동", () => {
+  it("채점이 끝나면 연습 기록에 남고 복습 큐에 들어간다", async () => {
+    prefillCorpus("daily", dailyFile);
+    evaluateMock.mockResolvedValue({
+      score: 80,
+      feedback: "좋습니다.",
+      corrections: [
+        { original: "looked", better: "looks", reason: "현재형이 자연스럽습니다." },
+      ],
+      betterExpression: "Tom looks really ill.",
+    });
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await screen.findByText("톰은 많이 아파 보여.");
+    await user.type(
+      screen.getByLabelText(/내 영어 번역/),
+      "Tom looked very sick.",
+    );
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+    await screen.findByText("Tom looks very sick.");
+
+    const log = JSON.parse(window.localStorage.getItem("enlearn.log.v1") ?? "[]");
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatchObject({
+      lane: "daily",
+      en: "Tom looks very sick.",
+      answer: "Tom looked very sick.",
+      score: 80,
+    });
+    expect(log[0].corrections[0].original).toBe("looked");
+
+    // 코퍼스 문장은 1일 뒤 복습으로 돌아온다
+    const queue = JSON.parse(window.localStorage.getItem("enlearn.srs.v1") ?? "[]");
+    expect(queue).toHaveLength(1);
+    expect(queue[0].ko).toBe("톰은 많이 아파 보여.");
+    expect(queue[0].due).toBe(addDays(localDateString(), 1));
+  });
+
+  it("취소하면 기록에 남기지 않는다", async () => {
+    prefillCorpus("daily", dailyFile);
+    evaluateMock.mockImplementation(
+      (_s: unknown, _k: string, _a: string, _r: unknown, opts?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener("abort", () => reject(new Error("abort")));
+        }),
+    );
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await screen.findByText("톰은 많이 아파 보여.");
+    await user.type(screen.getByLabelText(/내 영어 번역/), "Tom looked very sick.");
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+    await screen.findByRole("button", { name: /취소/ });
+    await user.click(screen.getByRole("button", { name: /취소/ }));
+
+    expect(window.localStorage.getItem("enlearn.log.v1")).toBeNull();
+  });
+});
+
+describe("TranslationTab — AI 생성", () => {
   it("주제를 입력해 LLM에게 문장을 만든다", async () => {
     generateMock.mockResolvedValue({
       sentence: "여행을 좋아합니다.",

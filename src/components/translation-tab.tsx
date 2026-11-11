@@ -24,6 +24,7 @@ import {
   sourcesOf,
 } from "@/lib/corpus";
 import { entryKey, DIFFICULTY_SHORT } from "@/lib/corpus-tools";
+import { logPractice } from "@/lib/practice";
 import { isSettingsComplete } from "@/lib/settings";
 import { useCancellable } from "@/lib/use-cancellable";
 import EvaluationCard from "./evaluation-card";
@@ -220,6 +221,18 @@ export default function TranslationTab({
         : r;
       setResult(finalResult);
       setEvaluated({ korean, english });
+      // 연습 기록: 대시보드·복습 큐의 재료가 된다 (코퍼스 문장만 복습에 들어간다)
+      logPractice({
+        lane: mode,
+        en: entry?.en ?? finalResult.referenceTranslation ?? "",
+        ko: korean,
+        answer: english,
+        score: finalResult.score,
+        corrections: finalResult.corrections.map((c) => ({
+          original: c.original,
+          better: c.better,
+        })),
+      });
     } catch (e) {
       if (stale() || signal.aborted) return;
       setResult(null);

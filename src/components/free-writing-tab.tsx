@@ -5,6 +5,7 @@ import type { LLMSettings, EvaluationResult } from "@/lib/types";
 import { isSettingsComplete } from "@/lib/settings";
 import { evaluateFreeWriting } from "@/lib/llm";
 import { useCancellable } from "@/lib/use-cancellable";
+import { logPractice } from "@/lib/practice";
 import EvaluationCard from "./evaluation-card";
 import SettingsWarning from "./settings-warning";
 
@@ -39,6 +40,17 @@ export default function FreeWritingTab({
       if (!isCurrent()) return;
       setResult(r);
       setEvaluatedSentence(trimmed);
+      logPractice({
+        lane: "free",
+        en: trimmed,
+        ko: null,
+        answer: trimmed,
+        score: r.score,
+        corrections: r.corrections.map((c) => ({
+          original: c.original,
+          better: c.better,
+        })),
+      });
     } catch (e) {
       // 취소(사용자·새 요청으로 인한 것)는 오류로 표시하지 않는다
       if (!isCurrent() || signal.aborted) return;

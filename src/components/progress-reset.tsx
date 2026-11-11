@@ -10,6 +10,13 @@ import {
   subscribeToProgress,
 } from "@/lib/corpus";
 import type { CorpusLane } from "@/lib/types";
+import {
+  clearLog,
+  clearSrs,
+  getPracticeServerSnapshot,
+  getPracticeSnapshot,
+  subscribeToPractice,
+} from "@/lib/practice";
 
 /**
  * ⚙️ 설정 화면의 '연습 기록' 섹션.
@@ -23,7 +30,24 @@ export default function ProgressReset() {
     getProgressSnapshot,
     getProgressServerSnapshot,
   );
+  const practice = useSyncExternalStore(
+    subscribeToPractice,
+    getPracticeSnapshot,
+    getPracticeServerSnapshot,
+  );
   const [message, setMessage] = useState<string | null>(null);
+
+  function resetPractice(what: "log" | "srs" | "both") {
+    if (what !== "srs") clearLog();
+    if (what !== "log") clearSrs();
+    setMessage(
+      what === "log"
+        ? "연습 기록(점수·자주 틀리는 표현)을 지웠습니다."
+        : what === "srs"
+          ? "복습 큐를 비웠습니다. 연습 기록은 그대로입니다."
+          : "연습 기록과 복습 큐를 모두 지웠습니다.",
+    );
+  }
 
   function reset(lane: CorpusLane | "all", what: "seen" | "korean" | "both") {
     if (what !== "korean") resetSeen(lane === "all" ? undefined : lane);
@@ -90,6 +114,53 @@ export default function ProgressReset() {
           className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-medium text-rose-600 transition hover:bg-rose-50"
         >
           전체 초기화
+        </button>
+      </div>
+
+      <h2 className="mt-6 mb-1 text-base font-bold text-slate-800">
+        연습 기록 · 복습 큐
+      </h2>
+      <p className="mb-4 text-xs leading-relaxed text-slate-500">
+        점수를 받은 문장과 자주 틀리는 표현, 간격반복(SRS) 큐입니다. 위의 받은
+        문장 기록과 별개라서, 이를 지워도 같은 문장이 다시 나오지는 않습니다.
+      </p>
+
+      <ul className="mb-4 space-y-1 text-sm text-slate-600">
+        <li>
+          연습 기록{" "}
+          <strong className="font-semibold text-slate-800">{practice.total}</strong>개
+          · 평균 <strong className="font-semibold text-slate-800">{practice.avgScore}</strong>점
+          · 연속 <strong className="font-semibold text-slate-800">{practice.streak}</strong>일
+        </li>
+        <li>
+          복습 큐{" "}
+          <strong className="font-semibold text-slate-800">{practice.srs}</strong>개 ·
+          오늘 대기{" "}
+          <strong className="font-semibold text-slate-800">{practice.due}</strong>개
+        </li>
+      </ul>
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => resetPractice("log")}
+          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+        >
+          🗑 연습 기록 지우기
+        </button>
+        <button
+          type="button"
+          onClick={() => resetPractice("srs")}
+          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+        >
+          🗑 복습 큐 비우기
+        </button>
+        <button
+          type="button"
+          onClick={() => resetPractice("both")}
+          className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-medium text-rose-600 transition hover:bg-rose-50"
+        >
+          연습 기록 + 복습 큐 초기화
         </button>
       </div>
 

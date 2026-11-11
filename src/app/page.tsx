@@ -9,13 +9,15 @@ import {
 } from "@/lib/settings";
 import FreeWritingTab from "@/components/free-writing-tab";
 import TranslationTab from "@/components/translation-tab";
+import ReviewTab from "@/components/review-tab";
 import SettingsTab from "@/components/settings-tab";
 
-type TabId = "free" | "translate" | "settings";
+type TabId = "free" | "translate" | "review" | "settings";
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: "free", label: "자유 작성", icon: "✍️" },
   { id: "translate", label: "번역 연습", icon: "📝" },
+  { id: "review", label: "복습", icon: "📆" },
   { id: "settings", label: "설정", icon: "⚙️" },
 ];
 
@@ -123,6 +125,7 @@ export default function Home() {
                 onGoSettings={() => setTab("settings")}
               />
             )}
+            {t.id === "review" && <ReviewTab />}
             {t.id === "settings" && (
               <SettingsTab settings={settings} onSaved={update} />
             )}

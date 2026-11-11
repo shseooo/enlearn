@@ -420,11 +420,12 @@ export function pickHints(
  *  그래서 길이 + FNV-1a 해시를 쓴다. (저장소 키이므로 암호학적 해시는 필요 없다) */
 export function entryKey(entry: Pick<CorpusEntry, "lane" | "en">): string {
   const normalized = normalizeKey(entry.en);
-  return `${entry.lane}:${normalized.length}:${hash36(normalized)}`;
+  return `${entry.lane}:${normalized.length}:${shortHash(normalized)}`;
 }
 
 /** FNV-1a → 36진 문자열 */
-function hash36(text: string): string {
+/** 짧은 문자열 해시 (저장소 키로 쓴다) */
+export function shortHash(text: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
     h ^= text.charCodeAt(i);

@@ -26,7 +26,15 @@ AI(LLM)가 **점수(0~100) + 피드백 + 더 좋은 표현**을 제안해주는 
 LLM이 문장을 **창작**하면 한국어가 어색하고, 정답(영어)까지 LLM 산출물이라 기준이 없습니다.
 그래서 **사람이 쓴 문장을 원본으로 쓰고**, LLM에는 (1) 영어→한국어 번역(동화), (2) 채점·설명만 시킵니다. 번역은 창작보다 훨씬 잘하는 작업입니다.
 
-### 3. ⚙️ 설정
+### 3. 📆 복습 (간격반복)
+- 채점된 **코퍼스 문장이 자동으로 복습 큐**에 들어갑니다 (1 → 3 → 7 → 21 → 45일).
+- 복습 화면에서는 한국어만 보여주고, **직접 쓴 뒤 정답(원문)과 비교**한 다음
+  `✓ 알고 있어요 / ~ 아슬아슬 / ✗ 잊었어요`로 자기 평가합니다. 다음 복습 날짜가 달라집니다.
+- **LLM을 쓰지 않으므로** API 설정이 없어도 동작하고 즉시 반응합니다.
+- **연습 현황**: 연속 연습일, 오늘/이번 주 문장 수, 평균 점수, 복습 대기 수,
+  **자주 틀리는 표현 상위 5개**(`원문 → 고친 표현`, 횟수).
+
+### 4. ⚙️ 설정
 - **Host** (예: `https://api.openai.com/v1`), **Model**, **API Key**
 - 브라우저 `localStorage`에만 저장됩니다 (백엔드 없음, 서버로 전송되지 않음)
 - **Host는 절대 URL로 검증**합니다. 스킴이 없는 값(`api.openai.com/v1` 같은)은
@@ -108,7 +116,7 @@ npm run check      # typecheck + lint + test 한 번에
 ## ✅ 테스트
 
 ```bash
-npm test           # vitest run (174개 테스트 / 12개 파일)
+npm test           # vitest run (206개 테스트 / 14개 파일)
 npm run test:watch # watch 모드
 ```
 
@@ -123,9 +131,21 @@ npm run test:watch # watch 모드
 - `src/components/__tests__/free-writing-tab.test.tsx` — 평가 플로우, 취소 버튼, 오류 표시
 - `src/components/__tests__/evaluation-card.test.tsx` — 결과 렌더링, 추가 질문 요청
 - `src/components/__tests__/settings-tab.test.tsx` — 저장 단일화, 외부 변경 동기화, Host 검증, 키 없는 호스트
-- `src/components/__tests__/progress-reset.test.tsx` — 연습 기록·번역 캐시 초기화
+- `src/components/__tests__/progress-reset.test.tsx` — 연습 기록·번역 캐시·복습 큐 초기화
+- `src/lib/__tests__/practice.test.ts` — 연습 기록 상한/갱신, 연속 연습일, 이번 주 집계, 자주 틀린 표현, SRS 단계·복습 날짜, 스냅샷 참조 안정성
+- `src/components/__tests__/review-tab.test.tsx` — 복습 플로우(정답 보기·평점·다음 문장), 놓친 횟수, 현황 카드
 - `src/components/__tests__/score-gauge.test.tsx` — 점수 색상·평가 문구
 - `src/app/__tests__/page.test.tsx` — 탭 시맨틱(tablist/tab/tabpanel), 입력 유지, 출처 라이선스 표기
+
+## 💾 브라우저에 저장되는 것 (서버 없음)
+
+| 키 | 내용 | 초기화 |
+| --- | --- | --- |
+| `enlearn.settings` | LLM host / model / apiKey | 설정 화면 |
+| `enlearn.seen.v2` | 받은 문장 기록 (같은 문장 재출제 방지) | ⚙️ 연습 기록 → 레인별 지우기 |
+| `enlearn.kocache.v2` | 동화 문장의 AI 한국어 번역 (문장당 1회) | ⚙️ 한국어 번역 캐시 지우기 |
+| `enlearn.log.v1` | 연습 기록: 점수·내 답·교정 (최대 400건) | ⚙️ 연습 기록 지우기 |
+| `enlearn.srs.v1` | 간격반복 큐: 단계·다음 복습 날짜·놓친 횟수 | ⚙️ 복습 큐 비우기 |
 
 ## 📁 구조
 
@@ -138,8 +158,9 @@ src/
 ├── components/
 │   ├── free-writing-tab.tsx    # ✍️ 자유 작성
 │   ├── translation-tab.tsx     # 📝 번역 연습 (코퍼스 / AI 생성)
+│   ├── review-tab.tsx          # 📆 복습 (간격반복) + 연습 현황
 │   ├── settings-tab.tsx        # ⚙️ 설정 + 연결 테스트 + 연습 기록 초기화
-│   ├── progress-reset.tsx      #연습 기록·한국어 번역 캐시 표시/초기화
+│   ├── progress-reset.tsx      # 연습 기록·한국어 번역 캐시 표시/초기화
 │   ├── settings-warning.tsx    # LLM 설정 안내 배너 (탭 공통)
 │   ├── evaluation-card.tsx     # 점수/피드백/개선안 공통 결과 카드 (원문 표기 포함)
 │   └── score-gauge.tsx         # SVG 원형 점수 게이지
@@ -147,6 +168,7 @@ src/
 │   ├── llm.ts              # OpenAI 호환 API 클라이언트 + 프롬프트
 │   ├── corpus.ts           # 코퍼스 로딩/문장 선택/푼 기록/한국어 번역 캐시
 │   ├── corpus-tools.ts     # 원문 정제·문장 분리·난이도·힌트 (순수 함수)
+│   ├── practice.ts         # 연습 기록 · 연속일수/통계 · 간격반복(SRS) 큐
 │   ├── parse.ts                # LLM 응답 방어적 JSON 파싱
 │   ├── settings.ts             # localStorage 설정 + 외부 스토어 구독
 │   ├── use-cancellable.ts      # 진행 중인 LLM 요청 취소/교차 방지 훅

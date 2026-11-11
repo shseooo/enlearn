@@ -26,7 +26,7 @@ describe("ProgressReset", () => {
 
     render(<ProgressReset />);
     const user = userEvent.setup();
-    await screen.findByText(/연습 기록/);
+    await screen.findByRole("heading", { name: "연습 기록" });
     expect(seenCount()).toBe(2);
     expect(koreanCacheCount()).toBe(1);
 
@@ -45,7 +45,7 @@ describe("ProgressReset", () => {
 
     render(<ProgressReset />);
     const user = userEvent.setup();
-    await screen.findByText(/연습 기록/);
+    await screen.findByRole("heading", { name: "연습 기록" });
 
     await user.click(screen.getByRole("button", { name: /전체 초기화/ }));
 
@@ -61,7 +61,7 @@ describe("ProgressReset", () => {
 
     render(<ProgressReset />);
     const user = userEvent.setup();
-    await screen.findByText(/연습 기록/);
+    await screen.findByRole("heading", { name: "연습 기록" });
 
     await user.click(screen.getByRole("button", { name: /한국어 번역 캐시 지우기/ }));
 
