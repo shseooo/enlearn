@@ -37,6 +37,24 @@ export default function Home() {
   const [tab, setTab] = useState<TabId>("free");
   const { settings, update } = useSettings();
 
+  /** 탭 목록에서 좌우 방향키/Home/End로 이동한다 (tablist 접근성 규칙) */
+  function onTabKeyDown(e: React.KeyboardEvent, index: number) {
+    const keys = ["ArrowRight", "ArrowLeft", "Home", "End"];
+    if (!keys.includes(e.key)) return;
+    e.preventDefault();
+    const next =
+      e.key === "Home"
+        ? 0
+        : e.key === "End"
+          ? TABS.length - 1
+          : e.key === "ArrowRight"
+            ? (index + 1) % TABS.length
+            : (index - 1 + TABS.length) % TABS.length;
+    const id = TABS[next].id;
+    setTab(id);
+    document.getElementById(`tab-${id}`)?.focus();
+  }
+
   return (
     <>
       <header className="border-b border-slate-200 bg-white">
@@ -50,13 +68,22 @@ export default function Home() {
             </p>
           </div>
 
-          <nav className="flex gap-1 rounded-xl bg-slate-100 p-1" aria-label="주요 메뉴">
-            {TABS.map((t) => (
+          <nav
+            role="tablist"
+            className="flex gap-1 rounded-xl bg-slate-100 p-1"
+            aria-label="주요 메뉴"
+          >
+            {TABS.map((t, i) => (
               <button
                 key={t.id}
+                id={`tab-${t.id}`}
                 type="button"
+                role="tab"
                 onClick={() => setTab(t.id)}
-                aria-current={tab === t.id ? "page" : undefined}
+                onKeyDown={(e) => onTabKeyDown(e, i)}
+                aria-selected={tab === t.id}
+                aria-controls={`panel-${t.id}`}
+                tabIndex={tab === t.id ? 0 : -1}
                 className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition ${
                   tab === t.id
                     ? "bg-white text-indigo-700 shadow-sm"
@@ -75,28 +102,46 @@ export default function Home() {
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-6">
         {/* 모든 탭을 마운트해 두고 hidden으로 전환 → 탭 이동 시 입력 상태 유지 */}
-        <div className={tab === "free" ? "" : "hidden"}>
-          <FreeWritingTab
-            settings={settings}
-            onGoSettings={() => setTab("settings")}
-          />
-        </div>
-        <div className={tab === "translate" ? "" : "hidden"}>
-          <TranslationTab
-            settings={settings}
-            onGoSettings={() => setTab("settings")}
-          />
-        </div>
-        <div className={tab === "settings" ? "" : "hidden"}>
-          <SettingsTab settings={settings} onSaved={update} />
-        </div>
+        {TABS.map((t) => (
+          <div
+            key={t.id}
+            id={`panel-${t.id}`}
+            role="tabpanel"
+            aria-labelledby={`tab-${t.id}`}
+            hidden={tab !== t.id}
+            className={tab === t.id ? "" : "hidden"}
+          >
+            {t.id === "free" && (
+              <FreeWritingTab
+                settings={settings}
+                onGoSettings={() => setTab("settings")}
+              />
+            )}
+            {t.id === "translate" && (
+              <TranslationTab
+                settings={settings}
+                onGoSettings={() => setTab("settings")}
+              />
+            )}
+            {t.id === "settings" && (
+              <SettingsTab settings={settings} onSaved={update} />
+            )}
+          </div>
+        ))}
       </main>
 
       <footer className="border-t border-slate-200 bg-white py-4">
-        <p className="mx-auto max-w-3xl px-4 text-center text-xs text-slate-400">
-          LLM 설정은 브라우저에만 저장됩니다 · CORS를 지원하는 호스트가
-          필요합니다
-        </p>
+        <div className="mx-auto max-w-3xl space-y-1 px-4 text-center text-xs text-slate-400">
+          <p>
+            LLM 설정은 브라우저에만 저장됩니다 · CORS를 지원하는 호스트가
+            필요합니다
+          </p>
+          {/* 코퍼스 라이선스는 데이터 파일에만 있고 화면에는 없었다 (CC-BY 출처 표기) */}
+          <p>
+            연습 문장: Tatoeba(kor-eng) CC-BY 2.0 France · Project Gutenberg
+            공개 영역 작품 · <code>npm run corpus</code>로 다시 만들기
+          </p>
+        </div>
       </footer>
     </>
   );
