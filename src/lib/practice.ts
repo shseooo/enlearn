@@ -34,7 +34,7 @@ export const REVIEW_INTERVALS = [1, 3, 7, 21, 45];
 export type ReviewGrade = "knows" | "shaky" | "forgot";
 
 // ---------------------------------------------------------------------------
-// 날짜 도구 (로컬曆 기준 — toISOString()은 UTC라 KST 아침에 하루가 바뀐다)
+// 날짜 도구 (로컬 달력 기준 — toISOString()은 UTC라 KST 아침에 하루가 바뀐다)
 // ---------------------------------------------------------------------------
 
 function parseLocal(date: string): Date {
@@ -541,7 +541,7 @@ export function getPracticeServerSnapshot(): PracticeSnapshot {
 // ---------------------------------------------------------------------------
 
 export interface WeekBucket {
-  /** 그 주의 월요일 (로컬曆 YYYY-MM-DD) */
+  /** 그 주의 월요일 (로컬 달력 YYYY-MM-DD) */
   start: string;
   end: string;
   /** 화면에 띄울 짧은 라벨 (3.9) */
@@ -551,7 +551,7 @@ export interface WeekBucket {
   mistakes: number;
 }
 
-/** 오늘(로컬曆 YYYY-MM-DD). 화면에서 Date를 직접 만들지 않게 여기서만 제공한다. */
+/** 오늘(로컬 달력 YYYY-MM-DD). 화면에서 Date를 직접 만들지 않게 여기서만 제공한다. */
 export function localToday(now = new Date()): string {
   return localDateString(now);
 }

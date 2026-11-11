@@ -126,6 +126,8 @@ export default function FreeWritingTab({
 
       {!loading && result && (
         <EvaluationCard
+          // 작성 문장이 바뀌면 카드가 새로 마운트된다(추가 질문 히스토리 격리)
+          key={evaluatedSentence}
           result={result}
           settings={settings}
           context={{ original: evaluatedSentence }}

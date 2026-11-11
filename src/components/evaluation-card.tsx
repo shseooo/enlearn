@@ -66,11 +66,22 @@ export default function EvaluationCard({
   referenceNote?: string;
 }) {
   const [history, setHistory] = useState<FollowUpTurn[]>([]);
+  // 결과가 다른 객체로 교체되면(= 새 평가) 이전 문장에 대한 질문·답변을 버린다.
+  // 호출부가 key로 다시 마운트하지 않아도 새는 길을 막는다 (리뷰 3-3).
+  const [historyOf, setHistoryOf] = useState(result);
+  if (historyOf !== result) {
+    setHistoryOf(result);
+    setHistory([]);
+  }
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { begin, cancel } = useCancellable();
   const requestSeq = useRef(0);
+  const resultRef = useRef(result);
+  useEffect(() => {
+    resultRef.current = result;
+  }, [result]);
 
   const canAsk = isSettingsComplete(settings) && input.trim().length > 0 && !loading;
 
@@ -79,6 +90,7 @@ export default function EvaluationCard({
     if (!question) return;
     const seq = ++requestSeq.current;
     const stale = () => seq !== requestSeq.current;
+    const resultAtAsk = result;
     const { signal } = begin();
     setLoading(true);
     setError(null);
@@ -87,6 +99,8 @@ export default function EvaluationCard({
         signal,
       });
       if (stale() || signal.aborted) return;
+      // 대기 중에 결과가 바뀌었으면 그 답변은 지금 카드의 것이 아니다
+      if (resultRef.current !== resultAtAsk) return;
       setHistory((h) => [...h, { question, answer }]);
       setInput("");
     } catch (e) {

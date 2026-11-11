@@ -6,17 +6,18 @@ import { clearCorpusCache, localDateString, prefillCorpus } from "@/lib/corpus";
 import { addDays } from "@/lib/practice";
 import type { CorpusFile } from "@/lib/types";
 
-const { generateMock, evaluateMock, translateMock } = vi.hoisted(() => ({
+const { generateMock, evaluateMock, translateMock, followUpMock } = vi.hoisted(() => ({
   generateMock: vi.fn(),
   evaluateMock: vi.fn(),
   translateMock: vi.fn(),
+  followUpMock: vi.fn(),
 }));
 
 vi.mock("@/lib/llm", () => ({
   generateKoreanExercise: generateMock,
   evaluateTranslation: evaluateMock,
   translateSentenceToKorean: translateMock,
-  askFollowUp: vi.fn(),
+  askFollowUp: (...args: unknown[]) => followUpMock(...args),
   DIFFICULTY_LABELS: {
     easy: "쉬움 — 기본 시제",
     normal: "보통 — 관용 표현",
@@ -321,6 +322,69 @@ describe("TranslationTab — 취소·출처 변경 경합 (리뷰 3-2)", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     fetcher.respond(dailyFile);
     fetcher.restore();
+  });
+});
+
+describe("TranslationTab — 추가 질문 히스토리 격리 (리뷰 3-3)", () => {
+  it("같은 문장에서 답안만 바꿔도 이전 질문·답변이 새 결과에 섞이지 않는다", async () => {
+    // 카드는 result가 계속 살아있는 동안 그대로 마운트돼 있다.
+    // key가 없으면 옛 히스토리가 새 result와 함께 askFollowUp에 넘어간다.
+    prefillCorpus("daily", dailyFile);
+    evaluateMock.mockResolvedValue({
+      score: 70,
+      feedback: "시제를 attention 없이 쓰세요.",
+      corrections: [],
+      betterExpression: "Tom looks really ill.",
+    });
+    followUpMock.mockResolvedValue("현재형이 자연스럽습니다.");
+
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await screen.findByText("톰은 많이 아파 보여.");
+    await user.type(screen.getByLabelText(/내 영어 번역/), "Tom looked very sick.");
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+    await screen.findByText("Tom looks really ill.");
+
+    await user.type(screen.getByLabelText("추가 질문"), "왜 과거형이 어색해요?");
+    await user.click(screen.getByRole("button", { name: /질문하기/ }));
+    await screen.findByText(/왜 과거형이 어색해요\?/);
+    await screen.findByText("현재형이 자연스럽습니다.");
+
+    // 같은 문장, 다른 답안으로 다시 평가 (문장 받기 없이 = 카드 유지)
+    await user.clear(screen.getByLabelText(/내 영어 번역/));
+    await user.type(screen.getByLabelText(/내 영어 번역/), "Tom is looking very sick.");
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+    await screen.findByText("시제를 attention 없이 쓰세요.");
+
+    expect(screen.queryByText(/왜 과거형이 어색해요\?/)).not.toBeInTheDocument();
+    expect(screen.queryByText("현재형이 자연스럽습니다.")).not.toBeInTheDocument();
+  });
+
+  it("문장을 새로 받아도 이전 질문이 남지 않는다", async () => {
+    prefillCorpus("daily", dailyFile);
+    evaluateMock.mockResolvedValue({
+      score: 70,
+      feedback: "좋습니다.",
+      corrections: [],
+      betterExpression: "Tom looks really ill.",
+    });
+    followUpMock.mockResolvedValue("현재형이 자연스럽습니다.");
+
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await user.type(screen.getByLabelText(/내 영어 번역/), "Tom looked very sick.");
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+    await user.type(screen.getByLabelText("추가 질문"), "왜 어색해요?");
+    await user.click(screen.getByRole("button", { name: /질문하기/ }));
+    await screen.findByText(/왜 어색해요\?/);
+
+    await user.click(screen.getByRole("button", { name: /다시 받기/ }));
+    await screen.findByText("톰은 많이 아파 보여.");
+    expect(screen.queryByText(/왜 어색해요\?/)).not.toBeInTheDocument();
   });
 });
 

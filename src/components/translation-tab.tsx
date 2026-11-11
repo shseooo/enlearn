@@ -524,6 +524,8 @@ export default function TranslationTab({
 
       {!loading && result && evaluated && (
         <EvaluationCard
+          // 문장+답안 기준으로 다시 마운트한다. 그래야 이전 문장에 대한
+          // 추가 질문 히스토리가 새 문장 카드에 섞이지 않는다(3-3).
           result={result}
           settings={settings}
           context={{ original: evaluated.korean, answer: evaluated.english }}

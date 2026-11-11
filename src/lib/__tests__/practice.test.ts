@@ -50,7 +50,7 @@ beforeEach(() => {
 });
 
 describe("날짜 도구", () => {
-  it("addDays/daysBetween은 로컬曆 기준으로 작동한다", () => {
+  it("addDays/daysBetween은 로컬 달력 기준으로 작동한다", () => {
     const base = localDateString(day(0));
     expect(addDays(base, 1)).toBe(localDateString(day(1)));
     expect(daysBetween(base, addDays(base, 7))).toBe(7);
@@ -101,7 +101,7 @@ describe("연습 기록", () => {
 });
 
 describe("연습 통계", () => {
-  it("연속练习일을 센다 (어제까지 이어지면 오늘은 안 풀어도 유지)", () => {
+  it("연속 연습일을 센다 (어제까지 이어지면 오늘은 안 풀어도 유지)", () => {
     logPractice(record({ en: "One distinct sentence here.", answer: "a1", now: day(-2) }));
     logPractice(record({ en: "Two distinct sentence here.", answer: "a2", now: day(-1) }));
     let stats = practiceStats();
@@ -286,7 +286,7 @@ describe("주간 집계 (그래프)", () => {
   it("주 단위로 문장 수·평균 점수·교정 개수를 합친다", () => {
     const layout = weeklySeries(4);
     const prevWeek = layout[layout.length - 2];
-    // 그 주 한복판(정오) 시각으로 기록한다 (로컬曆 기준)
+    // 그 주 한복판(정오) 시각으로 기록한다 (로컬 달력 기준)
     const midPrev = new Date(`${prevWeek.start}T12:00:00`);
 
     logPractice(

@@ -124,3 +124,56 @@ describe("EvaluationCard 추가 질문", () => {
     expect(screen.getByLabelText("추가 질문")).toHaveValue("실패할 질문");
   });
 });
+
+describe("EvaluationCard — 추가 질문 히스토리 격리 (리뷰 3-3)", () => {
+  it("결과가 새 객체로 바뀌면 이전 질문·답변을 지운다", async () => {
+    askFollowUpMock.mockResolvedValue("현재형이 자연스럽습니다.");
+    const { rerender } = render(
+      <EvaluationCard result={baseResult} settings={settings} context={context} />,
+    );
+
+    await userEvent.type(screen.getByLabelText("추가 질문"), "왜 어색해요?");
+    await userEvent.click(screen.getByRole("button", { name: /질문하기/ }));
+    await screen.findByText(/왜 어색해요\?/);
+    await screen.findByText("현재형이 자연스럽습니다.");
+
+    rerender(
+      <EvaluationCard
+        result={{ ...baseResult, score: 88, feedback: "새 문장 평가입니다." }}
+        settings={settings}
+        context={{ original: "새로운 원문 문장" }}
+      />,
+    );
+
+    expect(screen.getByText("새 문장 평가입니다.")).toBeInTheDocument();
+    expect(screen.queryByText(/왜 어색해요\?/)).not.toBeInTheDocument();
+    expect(screen.queryByText("현재형이 자연스럽습니다.")).not.toBeInTheDocument();
+    expect((screen.getByLabelText("추가 질문") as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("답변이 도착할 때쯤 결과가 바뀌었다면 그 답변을 버린다", async () => {
+    let resolve!: (value: string) => void;
+    askFollowUpMock.mockImplementation(
+      () => new Promise<string>((r) => (resolve = r)),
+    );
+    const { rerender } = render(
+      <EvaluationCard result={baseResult} settings={settings} context={context} />,
+    );
+
+    await userEvent.type(screen.getByLabelText("추가 질문"), "지금 질문");
+    await userEvent.click(screen.getByRole("button", { name: /질문하기/ }));
+
+    rerender(
+      <EvaluationCard
+        result={{ ...baseResult, feedback: "이미 다른 문장 평가" }}
+        settings={settings}
+        context={{ original: "다른 원문" }}
+      />,
+    );
+    resolve("늦게 도착한 답변");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(screen.queryByText("늦게 도착한 답변")).not.toBeInTheDocument();
+    expect(screen.getByText("이미 다른 문장 평가")).toBeInTheDocument();
+  });
+});
