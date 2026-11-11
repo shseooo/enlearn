@@ -437,8 +437,8 @@ async function requestAssistantText(
   return result.text;
 }
 
-const JSON_SCHEMA = [
-  "{",
+/** 평가 JSON의 공통 필드 정의. 필드 이름은 parse.ts의 별칭 매핑과 짝을 이룬다. */
+const EVAL_FIELDS = [
   '  "score": 0~100 사이의 숫자 점수,',
   '  "feedback": "전체적인 평가. 한국어로 2~4문장.",',
   '  "corrections": [',
@@ -448,7 +448,21 @@ const JSON_SCHEMA = [
   '      "reason": "그 이유 (한국어)"',
   "    }",
   "  ],",
-  '  "betterExpression": "전체 문장을 자연스럽게 다듬은 최종 문장 (영어)"',
+];
+
+const FINAL_EXPRESSION_FIELD =
+  '  "betterExpression": "전체 문장을 자연스럽게 다듬은 최종 문장 (영어)"';
+
+const SCORE_SCHEMA = ["{", ...EVAL_FIELDS, FINAL_EXPRESSION_FIELD, "}"].join(
+  "\n",
+);
+
+/** 번역 연습은 참고 원문 영어를 함께 받는다. 스키마를 문자열 치환으로 변형하지 않고 나열한다. */
+const TRANSLATION_SCHEMA = [
+  "{",
+  ...EVAL_FIELDS,
+  '  "referenceTranslation": "원문 한국어에 가장 가까운 자연스러운 영어 참고 번역",',
+  FINAL_EXPRESSION_FIELD,
   "}",
 ].join("\n");
 
@@ -461,16 +475,26 @@ const OUTPUT_RULES = [
   "JSON 이외의 어떤 텍스트, 설명, markdown 코드펜스도 포함하지 마라.",
 ].join("\n");
 
+/** system 프롬프트 조립: 공통 규칙 + 상황별 지시 + JSON 스키마 */
+function evaluationSystemPrompt(
+  schema: string,
+  extraRules: string[] = [],
+): string {
+  return [OUTPUT_RULES, ...extraRules, "", "JSON 스키마:", schema].join("\n");
+}
+
 function freeWritingSystemPrompt(): string {
-  return `${OUTPUT_RULES}\n\nJSON 스키마:\n${JSON_SCHEMA}`;
+  return evaluationSystemPrompt(SCORE_SCHEMA, [
+    "",
+    "사용자가 직접 쓴 영어 문장을 평가해라.",
+  ]);
 }
 
 function translationSystemPrompt(): string {
-  const schema = JSON_SCHEMA.replace(
-    '"betterExpression"',
-    '"referenceTranslation": "원문 한국어에 가장 가까운 자연스러운 영어 참고 번역",\n  "betterExpression"',
-  );
-  return `${OUTPUT_RULES}\n\n원문 한국어와 사용자의 영어 번역을 비교해 평가해라.\n\nJSON 스키마:\n${schema}`;
+  return evaluationSystemPrompt(TRANSLATION_SCHEMA, [
+    "",
+    "원문 한국어와 사용자의 영어 번역을 비교해 평가해라.",
+  ]);
 }
 
 /** 자유 작성: 영어 문장을 평가한다. */

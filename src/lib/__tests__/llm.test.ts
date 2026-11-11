@@ -5,6 +5,7 @@ import {
   checkHost,
   chatCompletion,
   evaluateFreeWriting,
+  evaluateTranslation,
   generateKoreanExercise,
   sanitizeProviderBody,
   testConnection,
@@ -412,6 +413,32 @@ describe("evaluateFreeWriting", () => {
     const [, init] = m.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string);
     expect(body.max_tokens).toBe(1200);
+  });
+
+  it("평가 프롬프트는 스키마를 공유하되 번역 연습만 referenceTranslation을 요구한다", async () => {
+    const m = mockFetchOk({
+      choices: [{ message: { content: '{"score": 70, "feedback": "좋아요."}' } }],
+    });
+    await evaluateFreeWriting(settings, "I goed home.");
+    await evaluateTranslation(settings, "배가 고파요.", "I am hungry.");
+
+    const systemPromptOf = (call: unknown[]): string => {
+      const body = JSON.parse((call[1] as RequestInit).body as string);
+      return (body.messages as { role: string; content: string }[])[0].content;
+    };
+
+    const free = systemPromptOf(m.mock.calls[0]);
+    const translation = systemPromptOf(m.mock.calls[1]);
+
+    expect(free).toContain('"score"');
+    expect(free).toContain('"corrections"');
+    expect(free).not.toContain("referenceTranslation");
+    expect(translation).toContain('"referenceTranslation"');
+    expect(translation).toContain('"corrections"');
+    // 두 프롬프트가 같은 출력 규칙을 공유한다
+    for (const p of [free, translation]) {
+      expect(p).toContain("JSON 이외의 어떤 텍스트");
+    }
   });
 
   it("답변 대신 추론만 돌아오면 그 독백을 피드백처럼 보여주지 않고 안내한다", async () => {
