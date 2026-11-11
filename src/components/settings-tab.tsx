@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { LLMSettings } from "@/lib/types";
 import { saveSettings } from "@/lib/settings";
-import { testConnection } from "@/lib/llm";
+import { checkHost, testConnection } from "@/lib/llm";
 
 interface SettingsTabProps {
   settings: LLMSettings;
@@ -25,7 +25,8 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
   const [saved, setSaved] = useState(false);
   const [test, setTest] = useState<TestState>({ status: "idle" });
 
-  const canSave = Boolean(host.trim() && model.trim());
+  const hostCheck = checkHost(host);
+  const canSave = hostCheck.ok && Boolean(model.trim());
 
   function handleSave() {
     if (!canSave) return;
@@ -89,8 +90,18 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
               value={host}
               onChange={(e) => setHost(e.target.value)}
               placeholder="https://api.openai.com/v1"
+              aria-invalid={!hostCheck.ok}
+              aria-describedby="llm-host-help"
               className="w-full rounded-xl border border-slate-300 p-3 font-mono text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
             />
+            <p
+              id="llm-host-help"
+              className={`mt-1 text-xs ${hostCheck.ok ? "text-slate-400" : "text-rose-600"}`}
+            >
+              {hostCheck.ok
+                ? `요청 대상: ${hostCheck.endpoint}`
+                : hostCheck.message}
+            </p>
             <p className="mt-1 text-xs text-slate-400">
               예: https://api.openai.com/v1 · http://localhost:11434/v1 ·
               https://openrouter.ai/api/v1

@@ -13,19 +13,65 @@ export interface ChatMessage {
   content: string;
 }
 
+/** host 검증 결과. 설정 화면의 인라인 검증에서도 그대로 사용한다. */
+export type HostCheck =
+  | { ok: true; endpoint: string }
+  | { ok: false; message: string };
+
 /**
- * host를 정규화해서 /chat/completions 엔드포인트를 만든다.
+ * host를 검증해서 /chat/completions 엔드포인트를 만든다.
  * - https://api.openai.com      -> https://api.openai.com/v1/chat/completions
  * - https://api.openai.com/v1   -> https://api.openai.com/v1/chat/completions
  * - http://localhost:11434/v1/  -> http://localhost:11434/v1/chat/completions
  * - .../v1/chat/completions (이미 전체 URL) -> 그대로
+ *
+ * 스킴이 없는 입력("api.openai.com/v1" 같은 흔한 오타)은 http(s)를 붙여 보정한다.
+ * 보정하지 않으면 fetch가 현재 origin 기준 상대 경로로 해석해
+ * Authorization(API 키)가 앱 자체 도메인으로 전송된다.
  */
+/** 스킴 없는 host 입력의 기본 프로토콜. localhost·포트 명시는 http로 본다. */
+function schemeForHostless(raw: string): "http" | "https" {
+  const authority = raw.split("/")[0];
+  if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(authority)) return "http";
+  if (/^[\w.-]+:\d+$/.test(authority)) return "http";
+  return "https";
+}
+
+export function checkHost(host: string): HostCheck {
+  const raw = host.trim().replace(/\/+$/, "");
+  if (!raw) return { ok: false, message: "Host를 입력해주세요." };
+
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw)
+    ? raw
+    : `${schemeForHostless(raw)}://${raw}`;
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return {
+      ok: false,
+      message: "Host를 해석할 수 없습니다. 예: https://api.openai.com/v1",
+    };
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    return { ok: false, message: "http(s) 프로토콜만 지원합니다." };
+  }
+  if (!url.hostname) {
+    return { ok: false, message: "Host에 도메인(또는 호스트:포트)이 필요합니다." };
+  }
+
+  // origin은 trailing slash를 포함하지 않으므로 경로만 정규화해 붙인다.
+  const path = url.pathname.replace(/\/+$/, "");
+  const base = `${url.origin}${path}`;
+  if (base.endsWith("/chat/completions")) return { ok: true, endpoint: base };
+  if (base.endsWith("/v1")) return { ok: true, endpoint: `${base}/chat/completions` };
+  return { ok: true, endpoint: `${base}/v1/chat/completions` };
+}
+
 export function buildEndpoint(host: string): string {
-  const base = host.trim().replace(/\/+$/, "");
-  if (!base) throw new Error("Host를 입력해주세요.");
-  if (base.endsWith("/chat/completions")) return base;
-  if (base.endsWith("/v1")) return `${base}/chat/completions`;
-  return `${base}/v1/chat/completions`;
+  const check = checkHost(host);
+  if (!check.ok) throw new Error(check.message);
+  return check.endpoint;
 }
 
 /** JSON 응답에서 콘텐츠 문자열을 추출한다. (호환 호스트별 형식 차이 대응) */

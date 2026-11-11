@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildEndpoint,
   askFollowUp,
+  checkHost,
   chatCompletion,
   evaluateFreeWriting,
   generateKoreanExercise,
@@ -63,6 +64,44 @@ describe("buildEndpoint", () => {
 
   it("host가 비어 있으면 에러를 던진다", () => {
     expect(() => buildEndpoint("   ")).toThrow(/Host를 입력해주세요/);
+  });
+
+  it("스킴이 빠진 host는 https://로 보정해 항상 절대 URL로 만든다", () => {
+    // 스킴 없이는 fetch가 자국 origin 상대 경로로 해석해 API 키가 같이 실려 간다
+    expect(buildEndpoint("api.openai.com")).toBe(
+      "https://api.openai.com/v1/chat/completions",
+    );
+    expect(buildEndpoint("api.openai.com/v1")).toBe(
+      "https://api.openai.com/v1/chat/completions",
+    );
+    for (const h of ["api.openai.com", "api.openai.com/v1", "h.ai/v1"]) {
+      expect(buildEndpoint(h)).toMatch(/^https?:\/\//);
+    }
+  });
+
+  it("스킴 없는 localhost·포트 명시는 http로 본다", () => {
+    expect(buildEndpoint("localhost:11434")).toBe(
+      "http://localhost:11434/v1/chat/completions",
+    );
+    expect(buildEndpoint("127.0.0.1:8080/v1")).toBe(
+      "http://127.0.0.1:8080/v1/chat/completions",
+    );
+  });
+
+  it("http(s) 아닌 프로토콜과 해석 불가 host는 거부한다", () => {
+    expect(() => buildEndpoint("ftp://x.example/v1")).toThrow(/http\(s\)/);
+    expect(() => buildEndpoint("::::")).toThrow(/Host/);
+  });
+
+  it("checkHost는 화면에 쓸 메시지와 엔드포인트를 함께 돌려준다", () => {
+    expect(checkHost("https://a.ai/v1")).toEqual({
+      ok: true,
+      endpoint: "https://a.ai/v1/chat/completions",
+    });
+    expect(checkHost("")).toEqual({
+      ok: false,
+      message: "Host를 입력해주세요.",
+    });
   });
 });
 
