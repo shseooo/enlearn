@@ -92,14 +92,23 @@ describe("문장 고르기", () => {
   });
 
   it("출처(sourceId)로 좁힐 수 있다", () => {
+    const picked = pickEntry(pool, { difficulty: "easy", sourceId: "a", seed: 3 });
+    expect(picked?.entry.sourceId).toBe("a");
+    expect(picked?.entry.difficulty).toBe("easy");
+    expect(picked?.recycled).toBe(false);
+  });
+
+  it("그 출처에 난이도가 없으면 난이도를 지키고 출처를 완화한다", () => {
     const picked = pickEntry(pool, {
       difficulty: "easy",
       sourceId: "b",
       seed: 3,
     });
-    // 쉬운 문장이 b에 없으므로 출처 전체에서 다시 뽑는다 (recycled)
-    expect(picked?.entry.sourceId).toBe("b");
-    expect(picked?.recycled).toBe(true);
+    // b에는 쉬운 문장이 없다 → 다른 책의 쉬운 문장(안 푼 것)을 고른다
+    expect(picked?.entry.difficulty).toBe("easy");
+    expect(picked?.entry.sourceId).toBe("a");
+    // 안 푼 문장이므로 "재출제"가 아니다
+    expect(picked?.recycled).toBe(false);
   });
 
   it("푼 문장은 다음 번 후보에서 빠진다", () => {
@@ -108,9 +117,28 @@ describe("문장 고르기", () => {
     markSeen(entryKey(first!.entry));
     expect(isSeen(entryKey(first!.entry))).toBe(true);
 
-    // 그 난이도에 안 푼 문장이 없으면 다시 출제(recycled) 표시
+    // 쉬운 문장이 다 소진되면 난이도를 완화해 안 푼 문장을 고른다 (재출제 아님)
     const second = pickEntry(pool, { difficulty: "easy", seed: 5 });
-    expect(second?.recycled).toBe(true);
+    expect(second?.entry.difficulty).not.toBe("easy");
+    expect(second?.recycled).toBe(false);
+  });
+
+  it("다 풀면 이미 푼 문장을 재출제하고 recycled를 true로 알려준다", () => {
+    for (const e of pool.entries) markSeen(entryKey(e));
+    const picked = pickEntry(pool, { difficulty: "easy", seed: 2 });
+    expect(picked?.entry.difficulty).toBe("easy");
+    expect(picked?.recycled).toBe(true);
+  });
+
+  it("includeSeen이면 푼 문장도 후보에 넣는다", () => {
+    markSeen(entryKey(pool.entries[0]));
+    const picked = pickEntry(pool, {
+      difficulty: "easy",
+      includeSeen: true,
+      seed: 4,
+    });
+    expect(picked?.entry.difficulty).toBe("easy");
+    expect(picked?.recycled).toBe(true);
   });
 
   it("코퍼스가 비어 있으면 null을 돌려준다", () => {

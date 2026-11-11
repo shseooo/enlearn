@@ -22,7 +22,7 @@ import {
   resolveKorean,
   sourcesOf,
 } from "@/lib/corpus";
-import { entryKey } from "@/lib/corpus-tools";
+import { entryKey, DIFFICULTY_SHORT } from "@/lib/corpus-tools";
 import { isSettingsComplete } from "@/lib/settings";
 import EvaluationCard from "./evaluation-card";
 import { SettingsWarning } from "./free-writing-tab";
@@ -351,8 +351,10 @@ export default function TranslationTab({
           {entry && (
             <p className="mt-1.5 text-xs text-slate-400">
               {entry.source}
+              {entry.difficulty !== difficulty &&
+                ` · 난이도 ${DIFFICULTY_SHORT[entry.difficulty]}`}
               {koFromLlm && " · 한국어는 AI가 영어 원문에서 번역한 것"}
-              {recycled && " · 다 풀었다면 다시 나온 것입니다"}
+              {recycled && " · 이미 푼 문장이 다시 나왔습니다"}
             </p>
           )}
 

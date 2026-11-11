@@ -8,6 +8,13 @@ import type { CorpusEntry, Difficulty } from "./types";
 const PG_START = /^\*\*\*\s*START OF (?:THE )?PROJECT GUTENBERG.*$/im;
 const PG_END = /^\*\*\*\s*END OF (?:THE )?PROJECT GUTENBERG.*$/im;
 
+/** 화면에 쓰는 짧은 난이도 이름 (프롬프트용 긴 설명과 분리) */
+export const DIFFICULTY_SHORT: Record<Difficulty, string> = {
+  easy: "쉬움",
+  normal: "보통",
+  hard: "어려움",
+};
+
 /** 문장 끝으로 취급하면 안 되는 약어 (점 뒤에 대문자가 와도 분할하지 않는다) */
 const ABBREVIATIONS = new Set([
   "mr", "mrs", "miss", "ms", "dr", "st", "prof", "jr", "sr", "hon", "rev",

@@ -214,38 +214,55 @@ function matchesSource(entry: CorpusEntry, sourceId?: string): boolean {
 }
 
 /**
- * 후보를 고른다. 좁혀가는 순서:
- * (난이도+출처, 미풀음) → (난이도 완화, 미풀음) → (출처 전체, 미풀음) → (다시 출제)
+ * 후보를 고른다. 우선순위(높은 순):
+ *   1) 같은 난이도 + 같은 출처 + 안 푼 문장
+ *   2) 같은 난이도 + 안 푼 문장   (출처 완화 — 학습 난이도를 먼저 지킨다)
+ *   3) 같은 출처 + 안 푼 문장     (난이도 완화)
+ *   4) 안 푼 문장 전체
+ *   5) 같은 조건에서 푼 문장 포함 (재출제)
+ * recycled는 "풀 단위"가 아니라 실제로 이미 푼 문장을 골랐을 때만 true다.
  */
 export function pickEntry(
   file: CorpusFile,
   options: PickOptions,
 ): PickResult | null {
+  if (file.entries.length === 0) return null;
+
   const seen = loadSeen();
   const rand = mulberry32(options.seed ?? dailySeed(file.lane));
 
-  const pools: { list: CorpusEntry[]; recycled: boolean }[] = [
-    {
-      list: file.entries.filter(
-        (e) =>
-          e.difficulty === options.difficulty &&
-          matchesSource(e, options.sourceId) &&
-          (options.includeSeen || !(entryKey(e) in seen)),
-      ),
-      recycled: false,
-    },
-    {
-      list: file.entries.filter((e) => matchesSource(e, options.sourceId)),
-      recycled: true,
-    },
-  ];
+  const rankOf = (e: CorpusEntry): number => {
+    const unseen = options.includeSeen || !(entryKey(e) in seen);
+    const sameDifficulty = e.difficulty === options.difficulty;
+    const sameSource = matchesSource(e, options.sourceId);
+    if (unseen) {
+      if (sameDifficulty && sameSource) return 0;
+      if (sameDifficulty) return 1;
+      if (sameSource) return 2;
+      return 3;
+    }
+    if (sameDifficulty && sameSource) return 4;
+    if (sameDifficulty) return 5;
+    if (sameSource) return 6;
+    return 7;
+  };
 
-  for (const pool of pools) {
-    if (pool.list.length === 0) continue;
-    const entry = pool.list[Math.floor(rand() * pool.list.length) % pool.list.length];
-    return { entry, recycled: pool.recycled };
+  let best = Number.POSITIVE_INFINITY;
+  let candidates: CorpusEntry[] = [];
+  for (const e of file.entries) {
+    const rank = rankOf(e);
+    if (rank < best) {
+      best = rank;
+      candidates = [e];
+    } else if (rank === best) {
+      candidates.push(e);
+    }
   }
-  return null;
+  if (candidates.length === 0) return null;
+
+  const entry =
+    candidates[Math.floor(rand() * candidates.length) % candidates.length];
+  return { entry, recycled: entryKey(entry) in seen };
 }
 
 // ---------------------------------------------------------------------------

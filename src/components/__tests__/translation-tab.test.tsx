@@ -143,17 +143,17 @@ describe("TranslationTab — 코퍼스 문장", () => {
     expect(screen.getByRole("button", { name: /문장 받기/ })).toBeEnabled();
   });
 
-  it("이미 받은 문장을 다시 받으면 다시 나온 것임을 알려준다", async () => {
+  it("이미 받은 문장을 다시 받으면 이미 푼 문장임을 알려준다", async () => {
     prefillCorpus("daily", dailyFile);
     render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
     const user = userEvent.setup();
 
     await user.click(screen.getByRole("button", { name: /문장 받기/ }));
     await screen.findByText("톰은 많이 아파 보여.");
-    expect(screen.queryByText(/다시 나온/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/다시 나왔/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /다시 받기/ }));
-    await screen.findByText(/다시 나온/);
+    await screen.findByText(/다시 나왔/);
   });
 
   it("동화 문장은 영어 원문을 한국어로 번역해 보여주고 책 목록을 채운다", async () => {
