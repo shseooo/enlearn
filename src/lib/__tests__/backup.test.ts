@@ -242,6 +242,7 @@ describe("백업 복원", () => {
       seen: 1,
       koreanCache: 1,
       settingsRestored: false,
+      writeFailed: false,
     });
     expect(loadLog()).toHaveLength(2);
     const restored = reviewItems().find((x) => x.id === "classic:r1");
@@ -294,6 +295,44 @@ describe("백업 복원", () => {
     expect(reviewItems()).toHaveLength(0);
     expect(exportKoreanCache()).toEqual({});
     expect(exportSeen()).toEqual({ "daily:3:only": "2026-01-05T00:00:00.000Z" });
+  });
+
+  // 리뷰 2-4: 쓰기가 실패해도 import*의 개수 반환은 "이전 값"을 세어 성공처럼 보인다.
+  // restoreBackup은 실패 여부를 따로 알려야 화면이 "대체했습니다"를 거짓으로 말하지 않는다.
+  it("저장이 실패하면 개수는 이전 값이지만 writeFailed로 구분된다 (리뷰 2-4)", () => {
+    seed();
+    const file = parseBackup(
+      JSON.stringify({
+        app: BACKUP_APP,
+        version: 1,
+        data: {
+          log: [
+            {
+              date: "2026-01-05",
+              lane: "daily",
+              en: "This must not be reported as stored.",
+              ko: "저장 실패 문장.",
+              answer: "nope",
+              score: 50,
+              corrections: [],
+            },
+          ],
+          srs: [],
+          seen: { "daily:3:nope": "2026-01-05T00:00:00.000Z" },
+          koreanCache: {},
+        },
+      }),
+    );
+
+    const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError", "QuotaExceededError");
+    });
+    const result = restoreBackup(file, true);
+    spy.mockRestore();
+
+    expect(result.writeFailed).toBe(true);
+    // 저장이 안 됐으니 이전 기록이 그대로다. 개수만 믿으면 "1개로 대체"처럼 보인다.
+    expect(loadLog()).toHaveLength(2);
   });
 
   it("빈 파일 내용으로 대체하면 모든 기록이 사라진다", () => {

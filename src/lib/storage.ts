@@ -9,6 +9,17 @@
  */
 let lastError: string | null = null;
 
+/**
+ * 저장 실패 횟수. safeSetItem은 예외를 삼키고 false만 돌려주므로, 여러 저장소를
+ * 한 동작으로 바꾸는 경로(백업 복원)는 "이번 동작에서 실패가 있었는지"를 이렇게
+ * 묻는다. 개수 반환값만 보면 실패해도 이전 값이 그대로 세어 성공처럼 보인다(리뷰 2-4).
+ */
+let writeFailures = 0;
+
+export function writeFailureCount(): number {
+  return writeFailures;
+}
+
 export function safeSetItem(key: string, value: string): boolean {
   try {
     localStorage.setItem(key, value);
@@ -18,6 +29,7 @@ export function safeSetItem(key: string, value: string): boolean {
     }
     return true;
   } catch (err) {
+    writeFailures += 1;
     const quota =
       err instanceof DOMException &&
       (err.name === "QuotaExceededError" || err.name === "NS_ERROR_DOM_QUOTA_REACHED");
@@ -64,7 +76,8 @@ export function clearStorageError(): void {
 /**
  * key별로 "마지막으로 읽은 문자열 + 파싱 결과"를 기억한다.
  * seen(최대 20,000개)·번역 캐시(4,000개)처럼 큰 저장소를 렌더/쓰기마다
- * 통째로 JSON.parse 하는 비용을 줄인다. 값은 호출자가 고치지 않도록 freeze한다.
+ * 통째로 JSON.parse 하는 비용을 줄인다. 값은 호출자가 고치지 않도록 freeze하지만,
+ * Object.freeze는 최상위 층만 얼린다 — 중첩 항목을 바꾸지 않으려면 값을 복사해야 한다.
  */
 const parseCache = new Map<string, { raw: string; value: unknown }>();
 

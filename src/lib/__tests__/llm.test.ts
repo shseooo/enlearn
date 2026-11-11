@@ -214,6 +214,53 @@ describe("chatCompletion", () => {
       }),
     ).rejects.toThrow(/HTTP 503/);
     expect(m5).toHaveBeenCalledTimes(3);
+
+    // 409도 재시도 대상으로 본다 — 코퍼스 빌드 쪽과 같은 집합을 쓴다(리뷰 2-12).
+    const m409 = vi.fn().mockResolvedValue(mockFetchError(409, { statusText: "Conflict" }));
+    vi.stubGlobal("fetch", m409);
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }], {
+        retryDelayMs: 0,
+      }),
+    ).rejects.toThrow(/HTTP 409/);
+    expect(m409).toHaveBeenCalledTimes(3);
+  });
+
+  // 리뷰 2-14: 시도별 타임아웃 × 재시도 횟수가 쌓이면 6분까지 기다릴 수 있어 둔
+  // "전체 대기 예산" 분기. 사용자 입력 없이 시간에만 의존한다.
+  it("전체 대기 예산을 넘기면 재시도하지 않고 예산 문구를 붙여 끝낸다 (리뷰 2-14)", async () => {
+    const busy = vi
+      .fn()
+      .mockResolvedValue(mockFetchError(503, { statusText: "Busy" }));
+    vi.stubGlobal("fetch", busy);
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }], {
+        retries: 2,
+        retryDelayMs: 5,
+        totalBudgetMs: 0,
+      }),
+    ).rejects.toThrow(
+      /HTTP 503[\s\S]*전체 대기 시간 0초를 넘어 더 시도하지 않습니다/,
+    );
+    // 예산 때문에 첫 실패에서 끝난다 — 원래는 3번 시도할 설정이었다
+    expect(busy).toHaveBeenCalledTimes(1);
+
+    // Retry-After가 예산보다 긴 값을 주면 그 대기로는 재시도하지 않는다
+    const rateLimited = vi.fn().mockResolvedValue(
+      mockFetchError(429, {
+        statusText: "Too Many Requests",
+        retryAfter: "600",
+      }),
+    );
+    vi.stubGlobal("fetch", rateLimited);
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }], {
+        retries: 2,
+        retryDelayMs: 0,
+        totalBudgetMs: 1_000,
+      }),
+    ).rejects.toThrow(/전체 대기 시간 1초를 넘어 더 시도하지 않습니다/);
+    expect(rateLimited).toHaveBeenCalledTimes(1);
   });
 
   it("Retry-After 초 값을 그대로 기다린다", async () => {

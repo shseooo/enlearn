@@ -502,7 +502,17 @@ export function exportSeen(): SeenMap {
 }
 
 export function exportKoreanCache(): Record<string, CachedKorean> {
-  return readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
+  // 읽기 경로는 getCachedKorean에서 값 내부까지 검사하지만, 이 경로는 parseStored의
+  // "평면 객체" 검사만 거친 값을 그대로 CachedKorean으로 단언하고 있었다.
+  // 그러면 검증되지 않은 항목(hints: [42] 등)이 "검증된 백업"에 그대로 담겨 다른
+  // 기기에서 조용히 사라진다(리뷰 2-15). cacheKorean과 같은 클리퍼를 통과시킨다.
+  const stored = readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
+  const out: Record<string, CachedKorean> = {};
+  for (const [key, value] of Object.entries(stored)) {
+    const normalized = normalizeCachedKorean(value);
+    if (normalized) out[key] = normalized;
+  }
+  return out;
 }
 
 /** 받은 문장 기록을 합친다(기본) 또는 대체한다. 잘못된 항목은 걸러낸다. */

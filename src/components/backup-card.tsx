@@ -82,6 +82,15 @@ export default function BackupCard() {
     const result = restoreBackup(loaded, replace, wantSettings);
     setLoaded(null);
     if (fileRef.current) fileRef.current.value = "";
+    if (result.writeFailed) {
+      // 저장이 실패하면 위의 개수는 바뀌지 않은 이전 값이다.
+      // "기존 기록을 대체했습니다"를 그대로 보여주면 사용자는 없는 결과를 믿는다(리뷰 2-4).
+      setMessage(null);
+      setError(
+        "일부 저장에 실패했습니다 — 용량을 정리한 뒤 다시 시도하세요. 백업 내용은 그대로입니다.",
+      );
+      return;
+    }
     setMessage(
       [
         `기록 ${result.log}개`,
@@ -93,6 +102,7 @@ export default function BackupCard() {
         .filter(Boolean)
         .join(" · ") + (replace ? " — 기존 기록을 대체했습니다" : " 을(를) 합쳤습니다"),
     );
+    setError(null);
   }
 
   return (

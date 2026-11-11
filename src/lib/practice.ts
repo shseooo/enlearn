@@ -511,6 +511,9 @@ const EMPTY_SNAPSHOT: PracticeSnapshot = {
 // undefined는 "아직 계산하지 않음" (getItem은 undefined를 돌려주지 않는다)
 let snapshotRawLog: string | null | undefined = undefined;
 let snapshotRawSrs: string | null | undefined = undefined;
+// 스냅샷을 계산한 로컬 날짜. due/오늘처럼 날짜로 판정하는 값은 저장소가 그대로여도
+// 자정을 넘기면 바뀌므로, 날짜가 다르면 원문 변화 없이 다시 계산한다(리뷰 2-9).
+let snapshotDay: string | undefined = undefined;
 let snapshotValue: PracticeSnapshot = EMPTY_SNAPSHOT;
 
 function notifyPractice(): void {
@@ -518,7 +521,34 @@ function notifyPractice(): void {
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }
 
+/**
+ * 다음 자정에 알림을 한 번 낸다.
+ * 자정에는 저장은 그대로인데 날짜로 판정하는 값만 바뀌므로, 원문 비교만으로는
+ * 스냅샷이 새 참조를 만들지 않는다. 자정 타이머가 없는 화면(⚙️ 설정의 "오늘 대기 N")은
+ * 어제의 대기 개수를 계속 보여준다(리뷰 1-13의 남은 자리, 리뷰 2-9).
+ * 구독이 생긴 시점에 예약하므로 모든 화면이 같은 규칙을 쓰게 된다.
+ */
+let midnightTimer: ReturnType<typeof setTimeout> | null = null;
+let midnightScheduledForDay: string | undefined = undefined;
+
+function scheduleMidnightNotify(): void {
+  if (typeof window === "undefined") return;
+  const now = new Date();
+  const today = localDateString(now);
+  if (midnightTimer !== null && midnightScheduledForDay === today) return;
+  midnightScheduledForDay = today;
+  const midnight = new Date(now);
+  midnight.setHours(24, 0, 0, 0);
+  midnightTimer = setTimeout(() => {
+    midnightTimer = null;
+    notifyPractice();
+    // 탭을 계속 열어두는 학습 앱이라 다음 자정도 이어서 예약한다
+    scheduleMidnightNotify();
+  }, midnight.getTime() - now.getTime());
+}
+
 export function subscribeToPractice(callback: () => void): () => void {
+  scheduleMidnightNotify(); // 자정에 저장이 바뀌지 않아도 다시 계산하게 한다(리뷰 2-9)
   window.addEventListener("storage", callback); // 다른 탭 변경
   window.addEventListener(CHANGE_EVENT, callback);
   return () => {
@@ -531,9 +561,15 @@ export function subscribeToPractice(callback: () => void): () => void {
 export function getPracticeSnapshot(): PracticeSnapshot {
   const rawLog = window.localStorage.getItem(LOG_KEY);
   const rawSrs = window.localStorage.getItem(SRS_KEY);
-  if (rawLog !== snapshotRawLog || rawSrs !== snapshotRawSrs) {
+  const day = localDateString();
+  if (
+    rawLog !== snapshotRawLog ||
+    rawSrs !== snapshotRawSrs ||
+    day !== snapshotDay
+  ) {
     snapshotRawLog = rawLog;
     snapshotRawSrs = rawSrs;
+    snapshotDay = day;
     const stats = practiceStats();
     snapshotValue = {
       total: stats.total,

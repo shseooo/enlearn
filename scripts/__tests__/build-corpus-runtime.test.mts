@@ -1,6 +1,6 @@
 /**
  * 코퍼스 빌드의 "실행 경로" 테스트 (리뷰 1-9).
- * 순수 함수(retryableStatus/requestChatOnce/balanceByDifficulty)는
+ * 순수 함수(재시도 상태는 src/lib/http-status.ts, requestChatOnce/balanceByDifficulty)는
  * build-corpus.test.mts가 잡고, 여기서는 다운로드 산물(zip)·번역 캐시·
  * 재개 동작을 확인한다.
  *

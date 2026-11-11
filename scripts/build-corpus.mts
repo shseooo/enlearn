@@ -32,6 +32,7 @@ import {
   stripWikisourceMarkup,
 } from "../src/lib/corpus-tools.ts";
 import { parseTranslationBatch } from "../src/lib/parse-batch.ts";
+import { isRetryableStatus } from "../src/lib/http-status.ts";
 import { hasHangul } from "./lib/foreign-text.ts";
 import { readJsonCache, writeJsonAtomically } from "./lib/json-file.ts";
 
@@ -447,15 +448,11 @@ export const LLM_TIMEOUT_MS = 120_000;
 export const LLM_RETRIES = 3;
 
 /**
- * OpenAI 호환 /chat/completions 호출.
- * src/lib/llm.ts를 가져오지 *않는* 이유: node는 확장자 없는 import를 해석하지
- * 못하는데 llm.ts가 ./parse, ./types를 그렇게 참조한다. 브라우저 쪽과 동작을
- * 맞춘다(타임아웃, 429/5xx/연결 실패만 재시도, Retry-After 존중, 키 없는 호스트 지원).
+ * OpenAI 호환 /chat/completions 호출. 브라우저 쪽(src/lib/llm.ts)과 동작을
+ * 맞춘다(타임아웃, 재시도 상태, Retry-After 존중, 키 없는 호스트 지원).
+ * 재시도할 상태 집합은 이제 공용 모듈에서 가져온다 — 예전에는 node가 확장자 없는
+ * import를 해석하지 못해 복제돼 있었고, 실제로 409 한 항목이 어긋나 있었다(리뷰 2-12).
  */
-export function retryableStatus(status: number): boolean {
-  return status === 408 || status === 429 || status >= 500;
-}
-
 export type ChatAttempt = {
   ok: boolean;
   content?: string;
@@ -483,7 +480,7 @@ export async function requestChatOnce(
       signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
     });
     if (!res.ok) {
-      const retryable = retryableStatus(res.status);
+      const retryable = isRetryableStatus(res.status);
       const hint =
         res.status === 401 || res.status === 403
           ? " — API 키를 확인하세요"
@@ -546,6 +543,24 @@ async function requestChat(
   throw new Error(lastError || "LLM 호출 실패");
 }
 
+/**
+ * 번역 재사용 캐시를 언제 디스크에 쓰는지 판정 (리뷰 2-10).
+ * 배치마다 1,400항목을 직렬화하면 재개 안전망 대비 쓰기가 반복된다(워커 최대 8개).
+ * 묶어서 써도 "죽은 자리에서 다시 시작"은 유지된다.
+ */
+export const TRANSLATION_CACHE_FLUSH_BATCHES = 10;
+export const TRANSLATION_CACHE_FLUSH_MS = 5_000;
+
+export function shouldFlushTranslationCache(
+  batchesSinceFlush: number,
+  msSinceFlush: number,
+): boolean {
+  return (
+    batchesSinceFlush >= TRANSLATION_CACHE_FLUSH_BATCHES ||
+    msSinceFlush >= TRANSLATION_CACHE_FLUSH_MS
+  );
+}
+
 /** 한 번에 여러 문장을 번역한다. (문장당 1호출이면 1,400호출이라 너무 느리다) */
 async function translateBatch(
   env: LlmEnv,
@@ -560,7 +575,10 @@ async function translateBatch(
     ],
     90 * sentences.length + 300,
   );
-  return parseTranslationBatch(content, sentences);
+  // 폐기한 이유를 남긴다. 조용히 넘어가면 "번역이 왜 없지?"를 추적할 수 없다(리뷰 2-1).
+  return parseTranslationBatch(content, sentences, (reason) => {
+    console.log(`  ! 응답 번호 대응 폐기: ${reason}`);
+  });
 }
 
 /** 코퍼스 항목에 한국어가 없으면 LLM으로 채운다 (캐시 재사용 + 유한 동시성) */
@@ -599,6 +617,13 @@ export async function fillKoreanTranslations(
   let failed = 0;
   let cursor = 0;
   let batchesDone = 0;
+  let batchesSinceFlush = 0;
+  let lastFlushAt = Date.now();
+  const flush = (): void => {
+    saveTranslationCache(cache);
+    batchesSinceFlush = 0;
+    lastFlushAt = Date.now();
+  };
   const worker = async (): Promise<void> => {
     while (cursor < batches.length) {
       const batch = batches[cursor++];
@@ -620,7 +645,12 @@ export async function fillKoreanTranslations(
         );
       }
       batchesDone += 1;
-      saveTranslationCache(cache);
+      // 배치마다 1,400항목짜리 캐시를 통째로 직렬화하지 않는다(리뷰 2-10).
+      // 재개 안전망은 묶기 단위 아래에서도 유지된다.
+      batchesSinceFlush += 1;
+      if (shouldFlushTranslationCache(batchesSinceFlush, Date.now() - lastFlushAt)) {
+        flush();
+      }
       // 요청 수(140+)가 로그를 뒤덮지 않게 20배치마다 한 줄만 남긴다
       if (batchesDone % 20 === 0 || cursor >= batches.length) {
         process.stdout.write(
@@ -631,9 +661,8 @@ export async function fillKoreanTranslations(
   };
   await Promise.all(
     Array.from({ length: Math.min(LLM_CONCURRENCY, batches.length) }, worker),
-  );
+  ).finally(flush); // 실패로 끝나도 이미 번역한 문장은 잃지 않는다
   process.stdout.write("\n");
-  saveTranslationCache(cache);
 }
 
 // ---------------------------------------------------------------------------
@@ -656,7 +685,17 @@ const pgUrls = (id: number): string[] => [
 async function downloadAll(): Promise<void> {
   if (LANES.includes("daily")) {
     console.log("· 일상 회화(Tatoeba) 내려받는 중…");
-    bytesQueue.daily = await cachedBytes("kor-eng.zip", [DAILY_URL]);
+    try {
+      bytesQueue.daily = await cachedBytes("kor-eng.zip", [DAILY_URL]);
+    } catch (e) {
+      // classic 레인은 책마다 안내하고 daily는 그대로 죽어 일관성이 없었다(리뷰 2-6).
+      console.error(
+        `  ✗ 일상 회화 원본(kor-eng.zip)을 준비하지 못했습니다. ` +
+          `네트워크가 닿지 않는 환경에서는 원본을 미리 ${join(CACHE_DIR, "kor-eng.zip")} 에 두은 뒤 --offline 으로 다시 실행하세요.` +
+          ` (${e instanceof Error ? e.message : String(e)})`,
+      );
+      throw e;
+    }
   }
   if (LANES.includes("classic")) {
     for (const book of BOOKS) {
@@ -715,16 +754,20 @@ export function balanceByDifficulty(
     hard: shuffleWithSeed(entries.filter((e) => e.difficulty === "hard"), seed + 2),
   };
   const picked: CorpusEntry[] = [];
+  // 모자란 수를 채울 때 picked.includes()는 선택 개수만큼 선형 검색이었다(리뷰 2-10).
+  const pickedSet = new Set<CorpusEntry>();
   let left = cap;
   for (const key of ["hard", "normal", "easy"] as const) {
     const take = Math.min(want[key], pools[key].length, left);
-    picked.push(...pools[key].slice(0, take));
+    const taken = pools[key].slice(0, take);
+    picked.push(...taken);
+    for (const e of taken) pickedSet.add(e);
     left -= take;
   }
   // 모자란 수는 남은 풀에서 채운다
   if (left > 0) {
     const rest = shuffleWithSeed(
-      entries.filter((e) => !picked.includes(e)),
+      entries.filter((e) => !pickedSet.has(e)),
       seed + 3,
     );
     picked.push(...rest.slice(0, left));
@@ -833,5 +876,10 @@ const invokedDirectly =
   pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
 
 if (invokedDirectly) {
-  await main();
+  // 예외를 그대로 두면 unhandled rejection + 스택 트레이스로 끝난다.
+  // 사용자에게 필요한 것은 원인과 다음 조치 한 줄이다(리뷰 2-6).
+  main().catch((e: unknown) => {
+    console.error(`빌드 실패: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  });
 }

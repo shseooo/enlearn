@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import TranslationTab from "../translation-tab";
-import { clearCorpusCache, localDateString, prefillCorpus } from "@/lib/corpus";
+import { clearCorpusCache, localDateString, prefillCorpus, seenCount } from "@/lib/corpus";
 import { addDays } from "@/lib/practice";
 import type { CorpusFile } from "@/lib/types";
 
@@ -70,6 +70,30 @@ const classicFile: CorpusFile = {
       difficulty: "normal",
       source: "이상한 나라의 앨리스",
       sourceId: "alice",
+    },
+  ],
+};
+
+/** 두 번째로 받아보는 코퍼스: 다른 책의 문장(한국어는 코퍼스에 이미 있음) */
+const otherBookFile: CorpusFile = {
+  ...classicFile,
+  sources: [
+    {
+      id: "looking-glass",
+      title: "거울을 통한 이상한 나라의 앨리스",
+      author: "Lewis Carroll",
+      count: 1,
+    },
+  ],
+  entries: [
+    {
+      lane: "classic",
+      en: "She was trying to see what was the matter with it.",
+      ko: "창문 쪽으로 기어갔다.",
+      hints: ["window"],
+      difficulty: "normal",
+      source: "거울을 통한 이상한 나라의 앨리스",
+      sourceId: "looking-glass",
     },
   ],
 };
@@ -194,7 +218,8 @@ describe("TranslationTab — 코퍼스 문장", () => {
     const user = userEvent.setup();
 
     await user.click(screen.getByRole("button", { name: /문장 받기/ }));
-    expect(await screen.findByText(/npm run corpus/)).toBeInTheDocument();
+    // 오류 배너는 다른 화면과 같이 role="alert"로 잡힌다 (리뷰 2-3).
+    expect(await screen.findByRole("alert")).toHaveTextContent(/npm run corpus/);
     vi.unstubAllGlobals();
   });
 
@@ -310,6 +335,59 @@ describe("TranslationTab — 취소·출처 변경 경합 (리뷰 3-2)", () => {
     fetcher.restore();
   });
 
+  // 리뷰 2-7: 출처 셀렉트만 요청을 무효화했다. 책·난이도는 상태를 바꾸기만 해서
+  // 이전 조건으로 골라진 문장이 화면에 얹히고 markSeen으로 영구 소진됐다.
+  it("문장 받기 중에 난이도를 바꾸면 늦게 도착한 문장이 소진되지 않는다 (리뷰 2-7)", async () => {
+    const fetcher = slowFetch();
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await user.selectOptions(screen.getByLabelText(/난이도/), "hard");
+    // 진행 중이던 호출의 finally는 stale()로 reset을 건너뜀 → 변경 쪽에서 푼다
+    expect(screen.getByRole("button", { name: /문장 받기/ })).toBeEnabled();
+
+    fetcher.respond(dailyFile);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(window.localStorage.getItem("enlearn.seen.v2")).toBeNull();
+    expect(screen.queryByText("톰은 많이 아파 보여.")).not.toBeInTheDocument();
+    fetcher.restore();
+  });
+
+  it("문장 받기 중에 책을 바꾸면 이전 책 조건으로 고른 문장이 적용되지 않는다 (리뷰 2-7)", async () => {
+    // 책 드롭다운은 코퍼스를 한 번 읽어야 채워진다 → 먼저 책 목록을 채운다
+    prefillCorpus("classic", classicFile);
+    translateMock.mockResolvedValue({
+      sentence: "앨리스는 아주 지겨워지기 시작했습니다.",
+      hints: ["tired"],
+    });
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.selectOptions(screen.getByLabelText(/문장 출처/), "classic");
+    await screen.findByText("이상한 나라의 앨리스 (1)");
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await screen.findByText("앨리스는 아주 지겨워지기 시작했습니다.");
+    const seenBefore = seenCount();
+
+    // 두 번째 받기는 네트워크를 늦추고, 응답에는 다른 책 문장을 담는다
+    clearCorpusCache();
+    const fetcher = slowFetch();
+    await user.click(screen.getByRole("button", { name: /다시 받기/ }));
+    await user.selectOptions(screen.getByLabelText(/^책$/), "alice");
+
+    fetcher.respond(otherBookFile);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(screen.queryByText("창문 쪽으로 기어갔다.")).not.toBeInTheDocument();
+    expect(seenCount()).toBe(seenBefore);
+    expect(window.localStorage.getItem("enlearn.seen.v2")).not.toContain(
+      "looking-glass",
+    );
+    fetcher.restore();
+  });
+
   it("코퍼스 응답을 취소하면 오류로 표시하지 않는다", async () => {
     const fetcher = slowFetch();
     render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
@@ -319,6 +397,8 @@ describe("TranslationTab — 취소·출처 변경 경합 (리뷰 3-2)", () => {
     await user.click(screen.getByRole("button", { name: /취소/ }));
     await new Promise((r) => setTimeout(r, 0));
 
+    // 취소 오류가 배너로 뜨지 않는다. 배너 자체가 alert로 잡히는 상황은
+    // "코퍼스 파일이 없으면…" 테스트가 고정한다(리뷰 2-3).
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     fetcher.respond(dailyFile);
     fetcher.restore();

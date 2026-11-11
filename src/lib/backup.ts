@@ -25,6 +25,7 @@ import {
 import { loadSettings, saveSettings } from "./settings";
 import { checkHost, hostWarning } from "./llm";
 import { localDateString } from "./corpus";
+import { writeFailureCount } from "./storage";
 import type { PracticeRecord, SrsItem } from "./practice";
 import type { CachedKorean } from "./corpus";
 
@@ -218,6 +219,11 @@ export interface RestoreResult {
   seen: number;
   koreanCache: number;
   settingsRestored: boolean;
+  /**
+   * 반영 중에 저장이 실패한 저장소가 있다(용량 초과 등). 이 경우 위의 개수는
+   * "바뀌지 않은 이전 값"일 수 있으므로 성공 문구를 쓰면 안 된다(리뷰 2-4).
+   */
+  writeFailed: boolean;
 }
 
 /** 백업 내용을 저장소에 반영한다. replace=true면 기존 기록을 지우고 채운다. */
@@ -234,6 +240,9 @@ export function restoreBackup(
 ): RestoreResult {
   // 여러 저장소를 한꺼번에 바꾼다. 알림이 저장소마다 여러 번 나면
   // 화면이 몇 번씩 다시 그려진다(리뷰 3-10).
+  // import*의 개수 반환은 저장이 실패해도 "이전 값"을 세어 성공처럼 보인다.
+  // 그래서 safeSetItem이 센 실패 횟수를 함께 확인한다(리뷰 2-4).
+  const failuresBefore = writeFailureCount();
   const result: RestoreResult = batchProgress(() =>
     batchPractice(() => {
       if (replace) {
@@ -246,6 +255,7 @@ export function restoreBackup(
         seen: importSeen(file.data.seen, replace),
         koreanCache: importKoreanCache(file.data.koreanCache, replace),
         settingsRestored: false,
+        writeFailed: false,
       };
     }),
   );
@@ -259,6 +269,7 @@ export function restoreBackup(
     });
     result.settingsRestored = true;
   }
+  result.writeFailed = writeFailureCount() > failuresBefore;
   return result;
 }
 

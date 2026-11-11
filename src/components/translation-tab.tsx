@@ -88,6 +88,21 @@ export default function TranslationTab({
   const requestSeq = useRef(0);
   const { begin, cancel } = useCancellable();
 
+  /**
+   * 조건(출처·책·난이도)을 바꿀 때 진행 중이던 요청을 끊는다.
+   * seq만 올리고 cancel()을 하지 않으면 in-flight 호출이 그대로 달려 비용을 내고,
+   * 응답이 stale()을 통과해 바뀐 조건의 화면에 얹힌다(리뷰 2-7).
+   * seq를 올린 쪽에서 상태를 직접 해제한다. 지연 응답은 stale()로 finally의
+   * reset을 건너뛰므로, 여기서 끄지 않으면 picking/loading이 영원히 켜진 채
+   * 남아 "문장 받기"가 새로고침 전까지 막힌다(리뷰 1-2).
+   */
+  function invalidateInFlight(): void {
+    requestSeq.current += 1;
+    cancel();
+    setPicking(false);
+    setLoading(false);
+  }
+
   // 책 드롭다운에 제목을 채우기 위해 코퍼스 목록을 미리 읽어둔다.
   useEffect(() => {
     if (mode !== "classic") return;
@@ -306,13 +321,7 @@ export default function TranslationTab({
           onChange={(e) => {
             // 출처를 바꾸면 진행 중인 요청 결과를 버리고 문장을 정리한다.
             // (Tatoeba 원문이 AI 모드로 바뀐 뒤에도 "📖 참고 번역"으로 보였던 문제)
-            requestSeq.current += 1;
-            cancel();
-            // seq를 올린 쪽에서 상태를 직접 해제한다. 지연 응답은 stale()로
-            // finally의 reset을 건너뛰므로, 여기서 끄지 않으면 picking/loading이
-            // 영원히 켜진 채 남아 "문장 받기"가 새로고침 전까지 막힌다(리뷰 1-2).
-            setPicking(false);
-            setLoading(false);
+            invalidateInFlight();
             setMode(e.target.value as SourceMode);
             setBookId("all");
             setPickError(null);
@@ -342,7 +351,12 @@ export default function TranslationTab({
             <select
               id="sentence-book"
               value={bookId}
-              onChange={(e) => setBookId(e.target.value)}
+              onChange={(e) => {
+                // 책 조건이 바뀐 뒤에 이전 책 조건으로 골라진 문장이 도착하면,
+                // 그 문장은 markSeen으로 영구 소진된다 (리뷰 2-7)
+                invalidateInFlight();
+                setBookId(e.target.value);
+              }}
               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
             >
               <option value="all">전체 책에서 골고루</option>
@@ -384,7 +398,11 @@ export default function TranslationTab({
           <select
             id="difficulty"
             value={difficulty}
-            onChange={(e) => setDifficulty(e.target.value as Difficulty)}
+            onChange={(e) => {
+              // 난이도도 책과 같은 규칙 — 진행 중 요청을 끊는다 (리뷰 2-7)
+              invalidateInFlight();
+              setDifficulty(e.target.value as Difficulty);
+            }}
             className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
           >
             <option value="easy">{DIFFICULTY_LABELS.easy}</option>
@@ -426,7 +444,10 @@ export default function TranslationTab({
         )}
 
         {pickError && (
-          <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          <div
+            role="alert"
+            className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700"
+          >
             <strong>오류:</strong> {pickError}
           </div>
         )}
@@ -511,7 +532,10 @@ export default function TranslationTab({
       )}
 
       {error && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+        <div
+          role="alert"
+          className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700"
+        >
           <strong>오류:</strong> {error}
         </div>
       )}

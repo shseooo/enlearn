@@ -302,4 +302,39 @@ describe("BackupCard — 저장 실패 안내 (리뷰 3-9)", () => {
     ).toBeInTheDocument();
     spy.mockRestore();
   });
+
+  // 리뷰 2-4: 쓰기가 실패해도 개수는 이전 값을 세므로, "대체했습니다" 문구가
+  // 그대로 보이면 사용자는 없는 결과를 믿는다.
+  it("대체가 실패하면 성공 문구 대신 실패 안내를 보여준다 (리뷰 2-4)", async () => {
+    logPractice({
+      lane: "classic",
+      en: "Sentence that must survive a failed replace.",
+      ko: "남아 있는 문장.",
+      answer: "kept",
+      score: 60,
+      corrections: [],
+    });
+    const text = JSON.stringify(buildBackup(false));
+    const spy = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new DOMException("QuotaExceededError", "QuotaExceededError");
+      });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<BackupCard />);
+    const user = userEvent.setup();
+    await user.upload(
+      screen.getByLabelText(/백업 가져오기/),
+      new File([text], "enlearn-backup.json", { type: "application/json" }),
+    );
+    await user.click(screen.getByRole("button", { name: /기존 기록을 지우고 대체/ }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /일부 저장에 실패했습니다/,
+    );
+    expect(screen.queryByText(/대체했습니다/)).not.toBeInTheDocument();
+    confirmSpy.mockRestore();
+    spy.mockRestore();
+  });
 });

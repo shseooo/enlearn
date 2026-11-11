@@ -123,6 +123,8 @@ describe("SettingsTab — 연결 테스트 취소 (리뷰 3-10)", () => {
     await user.click(screen.getByRole("button", { name: /취소/ }));
     await new Promise((r) => setTimeout(r, 0));
 
+    // 아래 "실패하면 role=alert" 테스트가 같은 배너를 잡아 주기 때문에
+    // 이 부재 단언은 항상 참이 아니다(리뷰 2-3).
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /연결 테스트/ }),
@@ -130,6 +132,19 @@ describe("SettingsTab — 연결 테스트 취소 (리뷰 3-10)", () => {
     expect(testConnectionMock).toHaveBeenCalledWith(
       expect.objectContaining({ host: "https://h.ai/v1" }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("연결 테스트가 실패하면 오류를 role=alert로 보여준다 (리뷰 2-3)", async () => {
+    testConnectionMock.mockRejectedValue(new Error("Host를 확인할 수 없습니다"));
+
+    render(<SettingsTab settings={settings} onSaved={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /연결 테스트/ }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /Host를 확인할 수 없습니다/,
     );
   });
 });

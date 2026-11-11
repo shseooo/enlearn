@@ -16,6 +16,8 @@ export interface ChatMessage {
 // host 검증·엔드포인트 만들기·http 경고는 src/lib/host.ts로 분리했다.
 // (설정 화면·백업 화면이 llm의 mock 없이도 쓸 수 있어야 한다)
 import { buildEndpoint, checkHost, hostWarning, type HostCheck } from "./host";
+// 재시도할 HTTP 상태는 코퍼스 빌드와 같은 규칙을 쓴다 (리뷰 2-12)
+import { isRetryableStatus } from "./http-status";
 
 export { buildEndpoint, checkHost, hostWarning, type HostCheck };
 
@@ -197,11 +199,6 @@ class HttpError extends Error {
     this.retryAfter = retryAfter;
     this.retryable = retryable;
   }
-}
-
-/** 429/5xx/시간초과처럼 잠시 뒤에 성공할 수 있는 상태 */
-export function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 409 || status === 429 || status >= 500;
 }
 
 const DEFAULT_RETRIES = 2;

@@ -102,7 +102,10 @@ export default function FreeWritingTab({
       )}
 
       {error && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+        <div
+          role="alert"
+          className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700"
+        >
           <strong>오류:</strong> {error}
         </div>
       )}

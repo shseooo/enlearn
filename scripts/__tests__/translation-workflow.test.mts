@@ -10,6 +10,8 @@ import { join } from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
 
+import { normalizeKey } from "../../src/lib/corpus-tools.ts";
+
 // vitest는 저장소 루트에서 돌린다. 스크립트 자체는 cwd(임시 작업 공간) 기준으로 움직인다.
 const REPO = process.cwd();
 
@@ -142,6 +144,32 @@ describe("사전 번역 도구사슬", () => {
     );
     const out = runOk(workspace, "merge-translations.mts", [".corpus-cache/ko/dirty.txt#0"]);
     expect(out).toContain("다른 언어 문자가 섞였습니다 [TV | C20]");
+  });
+
+  it("merge와 check-translations는 같은 한글 판정을 쓴다 (리뷰 2-11)", () => {
+    const workspace = makeTrackedWorkspace();
+    run(workspace, "dump-untranslated.mts");
+    mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
+    // 자모만 있는 원고: 공통 hasHangul은 한국어로 본다.
+    // merge가 자체적으로 쓰던 [가-힣] 정규식에서는 여기서만 "한글 없음"으로 걸러졌다.
+    writeFileSync(
+      join(workspace, ".corpus-cache", "ko", "jamo.txt"),
+      "0\t\u3131\u314f\u3137\u3142\n",
+    );
+
+    const check = runOk(workspace, "check-translations.mts", [
+      ".corpus-cache/ko/jamo.txt",
+    ]);
+    expect(check).toContain("문제 0건");
+
+    const merged = runOk(workspace, "merge-translations.mts", [
+      ".corpus-cache/ko/jamo.txt#0",
+    ]);
+    expect(merged).not.toContain("건넙니다(한글 없음)");
+    const cache = JSON.parse(
+      readFileSync(join(workspace, ".corpus-cache", "translations.json"), "utf8"),
+    ) as Record<string, { ko: string }>;
+    expect(cache[normalizeKey("Sentence number 1.")]?.ko).toBe("\u3131\u314f\u3137\u3142");
   });
 
   it("코퍼스 파일에 아직 반영되지 않은 번역은 빌드 미반영으로 알린다", () => {

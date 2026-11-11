@@ -267,6 +267,42 @@ describe("화면 구독 스냅샷", () => {
     window.dispatchEvent(new StorageEvent("storage", { key: "enlearn.log.v1" }));
     expect(called).toBe(2);
   });
+
+  // 리뷰 2-9: 자정에는 저장은 그대로인데 "오늘 대기"만 바뀐다. 원문 비교만으로는
+  // 스냅샷이 새 참조를 만들지 않아, 자정 타이머가 없는 ⚙️ 설정 화면이 어제의 0개를 계속 보여줬다.
+  it("자정을 넘기면 저장소 변경 없이도 스냅샷이 다시 계산된다 (리뷰 2-9)", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 0, 5, 23, 30, 0));
+      logPractice(
+        record({
+          en: "A sentence that becomes due after midnight.",
+          ko: "자정 뒤에 복습 나오는 문장.",
+          answer: "an attempt",
+          now: new Date(2026, 0, 5, 9, 0, 0),
+        }),
+      );
+
+      let notified = 0;
+      const cleanup = subscribeToPractice(() => {
+        notified += 1;
+      });
+      const before = getPracticeSnapshot();
+      expect(before.due).toBe(0);
+
+      vi.advanceTimersByTime(45 * 60 * 1000); // 로컬 자정을 넘어 1/6 00:15
+      expect(notified).toBe(1);
+
+      const after = getPracticeSnapshot();
+      expect(after).not.toBe(before);
+      expect(after.due).toBe(1);
+      // 지난 참조는 그대로 두고 새 참조로 변화를 알린다 (useSyncExternalStore 규칙)
+      expect(before.due).toBe(0);
+      cleanup();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("주간 집계 (그래프)", () => {

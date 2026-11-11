@@ -234,7 +234,10 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
           </div>
         )}
         {test.status === "error" && (
-          <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          <div
+            role="alert"
+            className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700"
+          >
             <strong>연결 실패:</strong> {test.message}
             <p className="mt-1 text-xs text-rose-500">
               대부분의 원인은 잘못된 Host/Model/API Key, 호스트의 CORS 비지원,

@@ -24,7 +24,7 @@ import { join } from "node:path";
 
 import { normalizeKey } from "../src/lib/corpus-tools.ts";
 
-import { foreignLetterRuns } from "./lib/foreign-text.ts";
+import { foreignLetterRuns, hasHangul } from "./lib/foreign-text.ts";
 import { readJsonCache, writeJsonAtomically } from "./lib/json-file.ts";
 
 const ROOT = process.cwd();
@@ -129,7 +129,9 @@ for (const arg of process.argv.slice(2)) {
   manuscript.forEach(({ ko }, i) => {
     const row = rows[offset + i];
     if (!row) return;
-    if (!/[가-힣]/.test(ko)) {
+    if (!hasHangul(ko)) {
+      // 자체 정규식([가-힣])을 쓰면 자모·분해형 표기는 여기서만 "한글 없음"이 되어
+      // 조용히 건너뛴다. check-translations는 통과하는 원고가 merge에서 버려진다(리뷰 2-11).
       console.warn(`  ! 건넙니다(한글 없음): ${row.en.slice(0, 40)}`);
       skipped++;
       return;

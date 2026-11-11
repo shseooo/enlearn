@@ -38,7 +38,10 @@ describe("foreignLetterRuns", () => {
   });
 
   it("허용 목록은 조각 전체가 일치할 때만 넘긴다", () => {
-    
+    // 부분 일치로 넘기면 "C"가 허용된 화면에 "C20" 같은 조각이 슬쩍 통과한다.
+    // check-translations, audit, 커밋 데이터 테스트가 같이 쓰는 안전판이다(리뷰 2-2).
+    expect(foreignLetterRuns("C20이 같다", new Set(["C20"]))).toEqual([]);
+    expect(foreignLetterRuns("C20이 같다", new Set(["C"]))).toEqual(["C20"]);
   });
 });
 

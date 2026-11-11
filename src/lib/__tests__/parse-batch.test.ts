@@ -28,6 +28,57 @@ describe("parseTranslationBatch", () => {
     expect(zeroBased.get(ENS[0])?.ko).toBe("토끼 문장입니다.");
   });
 
+  // 리뷰 2-1: 기준을 항목마다 정하면 0-based 목록에서 첫 항목만 맞고
+  // 두 번째 항목부터 한 칸 어긋난 번역이 코퍼스에 영구로 남는다.
+  it("0-based 목록은 여러 항목도 제자리에 붙인다 (리뷰 2-1)", () => {
+    const reasons: string[] = [];
+    const map = parseTranslationBatch(
+      JSON.stringify({
+        items: [
+          { i: 0, ko: "토끼 문장입니다." },
+          { i: 1, ko: "앨리스 문장입니다." },
+          { i: 2, ko: "애벌레 문장입니다." },
+        ],
+      }),
+      ENS,
+      (reason) => reasons.push(reason),
+    );
+    expect([...map.keys()]).toEqual(ENS);
+    expect(map.get(ENS[0])?.ko).toBe("토끼 문장입니다.");
+    expect(map.get(ENS[1])?.ko).toBe("앨리스 문장입니다.");
+    expect(map.get(ENS[2])?.ko).toBe("애벌레 문장입니다.");
+    expect(reasons).toEqual([]);
+
+    // 일부만 답한 0-based 목록도 어긋나지 않는다
+    const partial = parseTranslationBatch(
+      JSON.stringify({
+        items: [
+          { i: 0, ko: "토끼 문장입니다." },
+          { i: 2, ko: "애벌레 문장입니다." },
+        ],
+      }),
+      ENS,
+    );
+    expect([...partial.keys()]).toEqual([ENS[0], ENS[2]]);
+  });
+
+  it("번호 기준이 섞이면 번호로는 대응시키지 않고 사유를 남긴다 (리뷰 2-1)", () => {
+    const reasons: string[] = [];
+    const map = parseTranslationBatch(
+      JSON.stringify({
+        items: [
+          { i: 0, ko: "토끼 문장입니다." },
+          { i: 1, ko: "앨리스 문장입니다." },
+          { i: 3, ko: "애벌레 문장입니다." },
+        ],
+      }),
+      ENS,
+      (reason) => reasons.push(reason),
+    );
+    expect(map.size).toBe(0);
+    expect(reasons).toHaveLength(1);
+  });
+
   it("식별자 없는 배열은 개수가 맞을 때만 순서대로 대응시킨다 (리뷰 3-8)", () => {
     const sameSize = parseTranslationBatch(
       JSON.stringify([{ ko: "첫째 문장입니다." }, { ko: "둘째 문장입니다." }, { ko: "셋째 문장입니다." }]),

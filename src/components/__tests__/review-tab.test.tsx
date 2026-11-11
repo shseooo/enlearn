@@ -164,6 +164,80 @@ describe("ReviewTab", () => {
     expect(dueItems()).toHaveLength(2); // 평점하지 않았으므로 둘 다 대기 중
   });
 
+  // 리뷰 2-8: 문장을 바꾸거나 평점하면 current만 바뀐 채 in-flight 채점은 그대로였다.
+  // 사용자는 대기하지도 취소하지도 못한 채 토큰만 나가고 응답은 조용히 버려진다.
+  it("다른 문장으로 넘어가면 진행 중이던 채점이 취소된다 (리뷰 2-8)", async () => {
+    const signals: AbortSignal[] = [];
+    evaluateMock.mockImplementation(
+      (
+        _s: unknown,
+        _ko: string,
+        _a: string,
+        _r: unknown,
+        opts?: { signal?: AbortSignal },
+      ) => {
+        const signal = opts?.signal as AbortSignal;
+        signals.push(signal);
+        return new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("abort")));
+        });
+      },
+    );
+    practiceYesterday({ en: "Alpha grading sentence.", ko: "채점 중 첫 문장.", answer: "a" });
+    practiceYesterday({ en: "Beta grading sentence.", ko: "채점 중 두 번째 문장.", answer: "b" });
+    renderTab();
+    const user = userEvent.setup();
+
+    await screen.findByText("채점 중 첫 문장.");
+    await user.type(screen.getByLabelText(/기억나는 대로/), "an attempt");
+    await user.click(screen.getByRole("button", { name: /LLM 채점/ }));
+    await screen.findByText("채점 중…");
+
+    await user.click(screen.getByRole("button", { name: /다른 문장/ }));
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(true);
+    expect(await screen.findByText("채점 중 두 번째 문장.")).toBeInTheDocument();
+    expect(screen.queryByText("채점 중…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("평점하면 진행 중이던 채점을 끊는다 (리뷰 2-8)", async () => {
+    const signals: AbortSignal[] = [];
+    evaluateMock.mockImplementation(
+      (
+        _s: unknown,
+        _ko: string,
+        _a: string,
+        _r: unknown,
+        opts?: { signal?: AbortSignal },
+      ) => {
+        const signal = opts?.signal as AbortSignal;
+        signals.push(signal);
+        return new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("abort")));
+        });
+      },
+    );
+    practiceYesterday({ en: "Graded sentence one.", ko: "평점 중 첫 문장.", answer: "a" });
+    practiceYesterday({ en: "Graded sentence two.", ko: "평점 중 두 번째 문장.", answer: "b" });
+    renderTab();
+    const user = userEvent.setup();
+
+    await screen.findByText("평점 중 첫 문장.");
+    await user.type(screen.getByLabelText(/기억나는 대로/), "an attempt");
+    await user.click(screen.getByRole("button", { name: /LLM 채점/ }));
+    await screen.findByText("채점 중…");
+
+    // 평점 단추는 정답을 보여준 뒤에 나타난다
+    await user.click(screen.getByRole("button", { name: /정답 보기/ }));
+    await user.click(screen.getByRole("button", { name: /알고 있어요/ }));
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(true);
+    expect(screen.queryByText("채점 중…")).not.toBeInTheDocument();
+  });
+
 
   it("다른 문장 버튼은 큐를 순환한다 — 세 번째 문장도 보인다 (리뷰 3-5)", async () => {
     for (const ko of ["첫 번째 순환 문장.", "두 번째 순환 문장.", "세 번째 순환 문장."]) {

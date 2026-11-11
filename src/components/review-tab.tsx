@@ -154,6 +154,13 @@ export default function ReviewTab({
    * 세 번째 문장부터 영영 보여지지 않는다(리뷰 3-5).
    */
   function loadNext(excludeId?: string): void {
+    // 진행 중이던 채점은 새 문장에 쓸모가 없다. 그대로 두면 취소 단추는 사라지고
+    // 응답은 id가 맞아떨어지지 않아 조용히 버려진다 — 토큰만 나간다(리뷰 2-8).
+    requestSeq.current += 1;
+    cancel();
+    setScoringId(null);
+    setScore(null);
+    setScoreError(null);
     if (queue.length <= 1) {
       setCurrentId(null);
     } else {

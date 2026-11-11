@@ -5,6 +5,7 @@ import {
   cacheKorean,
   clearCorpusCache,
   clearKoreanCache,
+  exportKoreanCache,
   dailySeed,
   getCachedCorpus,
   getCachedKorean,
@@ -224,6 +225,32 @@ describe("동화 문장의 한국어 캐시", () => {
       JSON.stringify({ k: { ko: "문장.", hints: [1, 2] } }),
     );
     expect(getCachedKorean("k")).toBeNull();
+  });
+
+  // 리뷰 2-15: 내보내기(백업)가 저장소 값에 검증된 타입만 붙이고 있었다.
+  // 그러면 hints:[42] 같은 항목이 "검증된 백업"에 담겨 다른 기기에서 조용히 사라진다.
+  it("번역 캐시 내보내기도 cacheKorean과 같은 검사·상한을 통과시킨다 (리뷰 2-15)", () => {
+    window.localStorage.setItem(
+      "enlearn.kocache.v2",
+      JSON.stringify({
+        "classic:ok": { ko: "정상 번역입니다.", hints: ["ok"] },
+        "classic:bad-hints": { ko: "힌트가 숫자.", hints: [42] },
+        "classic:bad-ko": { ko: 42, hints: [] },
+      }),
+    );
+
+    const exported = exportKoreanCache();
+    expect(Object.keys(exported).sort()).toEqual([
+      "classic:bad-hints",
+      "classic:ok",
+    ]);
+    expect(exported["classic:bad-hints"].hints).toEqual([]);
+    expect(exported["classic:bad-ko"]).toBeUndefined();
+    // 백업에 담기는 값은 모두 CachedKorean 선언에 맞는 모양이다
+    for (const value of Object.values(exported)) {
+      expect(typeof value.ko).toBe("string");
+      expect(value.hints.every((h) => typeof h === "string")).toBe(true);
+    }
   });
 
   it("번역 캐시 개수를 세고 레인별로 지울 수 있다", () => {

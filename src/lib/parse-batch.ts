@@ -32,6 +32,8 @@ function keyOf(text: string): string {
 export function parseTranslationBatch(
   raw: string,
   expected: string[],
+  /** 폐기한 이유를 빌드 로그에 남기기 위한 콜백 (리뷰 2-1) */
+  onReject?: (reason: string) => void,
 ): Map<string, BatchTranslation> {
   const out = new Map<string, BatchTranslation>();
   let items: unknown[] | null = null;
@@ -75,6 +77,29 @@ export function parseTranslationBatch(
     );
   });
 
+  /*
+   * 번호 기준(1-based / 0-based)은 항목마다 정하지 않고 배치 전체에 대해 한 번 정한다.
+   * 항목마다 정하면 0-based 응답에서 첫 항목만 맞고 두 번째 항목부터 한 칸 어긋난
+   * 번역이 붙는다. 그 결과는 코퍼스와 번역 캐시에 영구로 남는다(리뷰 2-1).
+   */
+  const rawIndices: number[] = [];
+  for (const item of items) {
+    if (typeof item !== "object" || item === null) continue;
+    const o = item as Record<string, unknown>;
+    const n = o.i ?? o.index ?? o.n;
+    if (typeof n === "number" && Number.isInteger(n)) rawIndices.push(n);
+  }
+  const hasZero = rawIndices.some((n) => n === 0);
+  const outOfZeroBased = rawIndices.some((n) => n >= expected.length);
+  // 0이 없으면 기본(1-based). 0이 있고 범위 밖 번호도 있으면 두 기준이 섞였다는 뜻이다.
+  // 어느 항목이 어느 기준으로 쓰였는지 알 수 없으므로 번호 대응을 통째로 버린다.
+  const numberBase: 0 | 1 | null = hasZero ? (outOfZeroBased ? null : 0) : 1;
+  if (numberBase === null) {
+    onReject?.(
+      `번호 기준이 섞였습니다(0과 ${expected.length} 이상 번호가 함께 옴) — 번호로 대응시키지 않습니다`,
+    );
+  }
+
   for (const [position, item] of items.entries()) {
     if (typeof item !== "object" || item === null) continue;
     const o = item as Record<string, unknown>;
@@ -86,10 +111,8 @@ export function parseTranslationBatch(
     const rawIndex = o.i ?? o.index ?? o.n;
     const hasIndex = typeof rawIndex === "number" && Number.isInteger(rawIndex);
     let index = -1;
-    if (hasIndex) {
-      const n = rawIndex as number;
-      // 1-based(기본)·0-based 둘 다 받아들인다
-      index = n >= 1 && n <= expected.length ? n - 1 : n;
+    if (hasIndex && numberBase !== null) {
+      index = (rawIndex as number) - numberBase;
     }
     if (index < 0 || index >= expected.length) {
       const en =
