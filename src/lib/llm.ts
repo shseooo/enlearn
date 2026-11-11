@@ -378,6 +378,17 @@ export async function chatCompletionDetailed(
   throw new Error("LLM을 호출할 수 없습니다.");
 }
 
+/** 추가 질문 요청에 포함할 최근 턴 수 / 답변 발췌 길이 */
+export const FOLLOW_UP_HISTORY_TURNS = 3;
+export const FOLLOW_UP_ANSWER_CHARS = 500;
+
+/** 길이를 줄이되 잘린 것을 표시한다. */
+function clipText(text: string, limit: number): string {
+  const t = (text ?? "").trim();
+  if (t.length <= limit) return t;
+  return `${t.slice(0, limit)}…(이하 생략)`;
+}
+
 /** 호출 종류별 기본 max_tokens — 추론(reasoning) 모델은 "생각"에도 토큰을 쓴다. */
 const MAX_TOKENS = {
   evaluation: 1200,
@@ -615,9 +626,11 @@ export async function askFollowUp(
     2,
   );
 
-  const historyLines = history.flatMap((h, i) => [
+  // 화면에는 전체 히스토리를 남기되, 요청에는 최근 턴만 보낸다.
+  // (매 턴 답변 전문을 다시 올리면 토큰 비용이 기하급수적으로 늘고 컨텍스트를 넘친다)
+  const historyLines = history.slice(-FOLLOW_UP_HISTORY_TURNS).flatMap((h, i) => [
     `질문 ${i + 1}: ${h.question}`,
-    `답변 ${i + 1}: ${h.answer}`,
+    `답변 ${i + 1}: ${clipText(h.answer, FOLLOW_UP_ANSWER_CHARS)}`,
   ]);
 
   const userContent = [

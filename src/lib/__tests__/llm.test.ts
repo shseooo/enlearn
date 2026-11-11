@@ -540,4 +540,38 @@ describe("askFollowUp", () => {
     );
     expect(reply).toBe("답변 본문");
   });
+
+  it("히스토리는 최근 3턴만 컨텍스트에 넣는다 (비용·컨텍스트 폭증 방지)", async () => {
+    const m = mockFetchOk({ choices: [{ message: { content: "답" } }] });
+    await askFollowUp(
+      settings,
+      { original: "x" },
+      result,
+      "새 질문",
+      [1, 2, 3, 4, 5].map((n) => ({
+        question: `질문${n}`,
+        answer: `답변${n}`,
+      })),
+    );
+    const content = getUserContent(m);
+    expect(content).toContain("질문3");
+    expect(content).toContain("질문5");
+    expect(content).not.toContain("질문1");
+    expect(content).not.toContain("질문2");
+  });
+
+  it("긴 답변은 잘라서 보내고 새 질문은 그대로 보낸다", async () => {
+    const m = mockFetchOk({ choices: [{ message: { content: "답" } }] });
+    await askFollowUp(
+      settings,
+      { original: "x" },
+      result,
+      "새 질문",
+      [{ question: "질문1", answer: "가".repeat(600) }],
+    );
+    const content = getUserContent(m);
+    expect(content).toContain("이하 생략");
+    expect(content).not.toContain("가".repeat(600));
+    expect(content).toContain("새 질문");
+  });
 });
