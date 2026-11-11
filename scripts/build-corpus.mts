@@ -30,6 +30,7 @@ import {
   stripGutenbergBoilerplate,
   stripWikisourceMarkup,
 } from "../src/lib/corpus-tools.ts";
+import { parseTranslationBatch } from "../src/lib/parse-batch.ts";
 
 // ---------------------------------------------------------------------------
 // 목록
@@ -104,6 +105,9 @@ const positiveInt = (name: string, fallback: number): number => {
 const PER_BOOK = positiveInt("per-book", 180);
 const DAILY_CAP = positiveInt("daily-cap", 3000);
 const CLASSIC_CAP = positiveInt("classic-cap", 1400);
+/** --llm 사용 시 요청 단위 / 동시 요청 수 (사이트·프로바이더 배려로 낮게) */
+const LLM_BATCH = Math.min(positiveInt("batch", 10), 30);
+const LLM_CONCURRENCY = Math.min(positiveInt("concurrency", 3), 8);
 const ROOT = process.cwd();
 const CACHE_DIR = join(ROOT, ".corpus-cache");
 const OUT_DIR = join(ROOT, "public", "data", "corpus");
@@ -344,56 +348,189 @@ interface LlmEnv {
 function llmFromEnv(): LlmEnv | null {
   const host = process.env.ENLEARN_LLM_HOST ?? "";
   const model = process.env.ENLEARN_LLM_MODEL ?? "";
+  // 키가 없는 로컬 호스트(Ollama 등)도 있으므로 apiKey는 비어 둘 수 있다
   const apiKey = process.env.ENLEARN_LLM_API_KEY ?? "";
-  return host && model && apiKey ? { host, model, apiKey } : null;
+  return host && model ? { host, model, apiKey } : null;
 }
 
-async function translateToKorean(
+/**
+ * 번역 재사용 캐시 (.corpus-cache/translations.json)
+ * 1,400문장을 한 번에 옮기는 작업은 중단될 수 있다. 죽은 자리에서 다시 시작해도
+ * 이미 번역한 문장은 다시 요청하지 않는다.
+ */
+type TranslationCache = Record<string, { ko: string; hints: string[] }>;
+const TRANSLATION_CACHE_FILE = join(CACHE_DIR, "translations.json");
+
+function loadTranslationCache(): TranslationCache {
+  if (!existsSync(TRANSLATION_CACHE_FILE)) return {};
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(TRANSLATION_CACHE_FILE, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as TranslationCache)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveTranslationCache(cache: TranslationCache): void {
+  mkdirSync(CACHE_DIR, { recursive: true });
+  writeFileSync(TRANSLATION_CACHE_FILE, JSON.stringify(cache));
+}
+
+const BATCH_SYSTEM_PROMPT = `너는 영어 문장을 학습용 한국어로 옮기는 번역기다.
+- 중학생 교과서가 쓰는 자연스러운 현대 한국어로, 문장 순서와 뜻을 지켜 옮긴다.
+- 각 문장에는 연습 힌트로 그 문장에 나온 영어 단어 2~4개(소문자 기본형)를 곁들인다.
+- 답은 {"items":[{"i":번호,"ko":"한국어 문장","hints":["word"]}]} JSON 하나만. 설명 금지.`;
+
+const LLM_TIMEOUT_MS = 120_000;
+const LLM_RETRIES = 3;
+
+/**
+ * OpenAI 호환 /chat/completions 호출.
+ * src/lib/llm.ts를 가져오지 *않는* 이유: node는 확장자 없는 import를 해석하지
+ * 못하는데 llm.ts가 ./parse, ./types를 그렇게 참조한다. 브라우저 쪽과 동작을
+ * 맞춘다(타임아웃, 429/5xx/연결 실패만 재시도, Retry-After 존중, 키 없는 호스트 지원).
+ */
+async function requestChat(
   env: LlmEnv,
-  sentence: string,
-): Promise<{ ko: string; hints: string[] }> {
+  messages: { role: string; content: string }[],
+  maxTokens: number,
+): Promise<string> {
   const base = env.host.replace(/\/+$/, "");
   const url = base.endsWith("/chat/completions")
     ? base
     : `${base.endsWith("/v1") ? base : `${base}/v1`}/chat/completions`;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (env.apiKey) headers.Authorization = `Bearer ${env.apiKey}`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${env.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: env.model,
-      temperature: 0.2,
-      max_tokens: 300,
-      messages: [
-        {
-          role: "system",
-          content:
-            '오늘 배울 영어 문장을 한국어 학습자에게 보여준다. ' +
-            '반드시 {"ko":"현재 한국어로 자연스러운 번역","hints":["핵심 영어 단어 2~4개"]} JSON만 출력해라. ' +
-            "ko는 문어체 고어투가 아니라 요즘 쓰는 자연스러운 한국어로 옮겨라. hints는 영어만.",
-        },
-        { role: "user", content: `영어 문장: """${sentence}"""` },
-      ],
-    }),
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = (await res.json()) as {
-    choices?: { message?: { content?: string } }[];
+  let lastError = "";
+  for (let attempt = 0; attempt <= LLM_RETRIES; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: env.model,
+          temperature: 0.2,
+          max_tokens: maxTokens,
+          messages,
+        }),
+        signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        const retryable = res.status === 408 || res.status === 429 || res.status >= 500;
+        const wait = Number(res.headers.get("retry-after")) * 1000;
+        if (!retryable || attempt === LLM_RETRIES) {
+          throw new Error(`HTTP ${res.status} ${res.statusText}`);
+        }
+        lastError = `HTTP ${res.status}`;
+        await sleep(Number.isFinite(wait) && wait > 0 ? Math.min(wait, 15_000) : 800 * 2 ** attempt);
+        continue;
+      }
+      const data = (await res.json()) as {
+        choices?: { message?: { content?: string } }[];
+      };
+      const content = data.choices?.[0]?.message?.content ?? "";
+      if (!content.trim()) throw new Error("빈 응답");
+      return content;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      if (attempt === LLM_RETRIES) break;
+      await sleep(800 * 2 ** attempt);
+    }
+  }
+  throw new Error(lastError || "LLM 호출 실패");
+}
+
+/** 한 번에 여러 문장을 번역한다. (문장당 1호출이면 1,400호출이라 너무 느리다) */
+async function translateBatch(
+  env: LlmEnv,
+  sentences: string[],
+): Promise<Map<string, { ko: string; hints: string[] }>> {
+  const numbered = sentences.map((s, i) => `${i + 1}. ${s}`).join("\n");
+  const content = await requestChat(
+    env,
+    [
+      { role: "system", content: BATCH_SYSTEM_PROMPT },
+      { role: "user", content: numbered },
+    ],
+    90 * sentences.length + 300,
+  );
+  return parseTranslationBatch(content, sentences);
+}
+
+/** 코퍼스 항목에 한국어가 없으면 LLM으로 채운다 (캐시 재사용 + 유한 동시성) */
+async function fillKoreanTranslations(
+  entries: CorpusEntry[],
+  env: LlmEnv,
+): Promise<void> {
+  const cache = loadTranslationCache();
+  let reused = 0;
+  for (const e of entries) {
+    if (e.ko) continue;
+    const hit = cache[normalizeKey(e.en)];
+    if (hit?.ko) {
+      e.ko = hit.ko;
+      if (hit.hints?.length) e.hints = hit.hints;
+      reused += 1;
+    }
+  }
+  if (reused) console.log(`  이미 번역한 문장 ${reused}개 재사용`);
+
+  const todo = entries.filter((e) => !e.ko);
+  if (!todo.length) {
+    console.log("  번역이 필요한 문장이 없습니다.");
+    return;
+  }
+
+  const batches: CorpusEntry[][] = [];
+  for (let i = 0; i < todo.length; i += LLM_BATCH) {
+    batches.push(todo.slice(i, i + LLM_BATCH));
+  }
+  console.log(
+    `· 동화 ${todo.length}문장 → 배치 ${batches.length}개 (${LLM_BATCH}문장/요청, 동시 ${LLM_CONCURRENCY})`,
+  );
+
+  let done = 0;
+  let failed = 0;
+  let cursor = 0;
+  let batchesDone = 0;
+  const worker = async (): Promise<void> => {
+    while (cursor < batches.length) {
+      const batch = batches[cursor++];
+      try {
+        const map = await translateBatch(env, batch.map((e) => e.en));
+        for (const e of batch) {
+          const hit = map.get(e.en);
+          if (!hit) continue;
+          e.ko = hit.ko;
+          if (hit.hints.length) e.hints = hit.hints;
+          cache[normalizeKey(e.en)] = { ko: hit.ko, hints: hit.hints };
+          done += 1;
+        }
+        failed += batch.length - map.size;
+      } catch (err) {
+        failed += batch.length;
+        console.log(
+          `\n  ! 배치 실패(건너뜀): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      batchesDone += 1;
+      saveTranslationCache(cache);
+      // 요청 수(140+)가 로그를 뒤덮지 않게 20배치마다 한 줄만 남긴다
+      if (batchesDone % 20 === 0 || cursor >= batches.length) {
+        process.stdout.write(
+          `  번역 ${done}/${todo.length} (실패 ${failed}, 배치 ${batchesDone}/${batches.length})\n`,
+        );
+      }
+    }
   };
-  const content = data.choices?.[0]?.message?.content ?? "";
-  const match = content.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("JSON 없음");
-  const parsed = JSON.parse(match[0]) as { ko?: unknown; hints?: unknown };
-  const ko = typeof parsed.ko === "string" ? parsed.ko.trim() : "";
-  if (!hasHangul(ko)) throw new Error("한국어 없음");
-  const hints = Array.isArray(parsed.hints)
-    ? parsed.hints.filter((h): h is string => typeof h === "string").slice(0, 4)
-    : [];
-  return { ko, hints };
+  await Promise.all(
+    Array.from({ length: Math.min(LLM_CONCURRENCY, batches.length) }, worker),
+  );
+  process.stdout.write("\n");
+  saveTranslationCache(cache);
 }
 
 // ---------------------------------------------------------------------------
@@ -545,17 +682,8 @@ async function main(): Promise<void> {
     if (!env) {
       console.log("! --llm에는 ENLEARN_LLM_HOST / _MODEL / _API_KEY 가 필요합니다.");
     } else {
-      const target = classic.filter((e) => !e.ko);
-      console.log(`· 동화 ${target.length}개 문장에 한국어 번역 입히는 중…`);
-      for (const e of target) {
-        try {
-          const { ko, hints } = await translateToKorean(env, e.en);
-          e.ko = ko;
-          if (hints.length) e.hints = hints;
-        } catch (err) {
-          console.log(`  ! 번역 실패(건너뜀): ${e.en.slice(0, 40)} — ${err instanceof Error ? err.message : err}`);
-        }
-      }
+      // 밸런싱 후 실제 수록되는 문장만 번역한다 (후보 전체를 번역하면 비용이 70% 이상 늘어난다)
+      await fillKoreanTranslations(classicEntries, env);
     }
   }
 
