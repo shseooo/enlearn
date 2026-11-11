@@ -47,20 +47,25 @@ describe("loadSettings", () => {
 });
 
 describe("isSettingsComplete", () => {
-  it("host/model/apiKey가 모두 있으면 true", () => {
+  it("host/model이 있으면 true (API 키는 선택)", () => {
     expect(
       isSettingsComplete({ host: "h", model: "m", apiKey: "k" }),
     ).toBe(true);
+    // Ollama 등 키 없는 OpenAI 호환 호스트도 사용할 수 있어야 한다
+    expect(
+      isSettingsComplete({
+        host: "http://localhost:11434/v1",
+        model: "m",
+        apiKey: "",
+      }),
+    ).toBe(true);
   });
 
-  it("어느 하나라도 비어 있으면 false", () => {
+  it("host 또는 model이 비어 있으면 false", () => {
     expect(isSettingsComplete({ host: "", model: "m", apiKey: "k" })).toBe(
       false,
     );
     expect(isSettingsComplete({ host: "h", model: "", apiKey: "k" })).toBe(
-      false,
-    );
-    expect(isSettingsComplete({ host: "h", model: "m", apiKey: "  " })).toBe(
       false,
     );
   });

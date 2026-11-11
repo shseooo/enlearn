@@ -73,7 +73,10 @@ export function getSettingsServerSnapshot(): LLMSettings {
   return DEFAULT_SETTINGS;
 }
 
-/** LLM 호출에 필요한 모든 항목이 채워졌는지 확인한다. */
+/**
+ * LLM을 호출할 수 있는 상태인지. API 키는 선택적이다:
+ * Ollama 같은 로컬/게이트웨이 호스트는 키 없이 OpenAI 호환 API를 제공한다.
+ */
 export function isSettingsComplete(s: LLMSettings): boolean {
-  return Boolean(s.host.trim() && s.model.trim() && s.apiKey.trim());
+  return Boolean(s.host.trim() && s.model.trim());
 }

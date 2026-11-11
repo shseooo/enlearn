@@ -132,7 +132,7 @@ export default function TranslationTab({
     if (!ko) {
       if (!isSettingsComplete(settings)) {
         throw new Error(
-          "동화 문장은 첫 한국어 번역에 LLM이 필요합니다. ⚙️ 설정에서 host/model/apiKey를 입력하세요.",
+          "동화 문장은 첫 한국어 번역에 LLM이 필요합니다. ⚙️ 설정에서 host/model을 입력하세요.",
         );
       }
       const translated = await translateSentenceToKorean(settings, item.en, {

@@ -270,6 +270,16 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/** API 키가 없는 호스트(Ollama 등)에는 Authorization 헤더를 보내지 않는다. */
+function headersFor(settings: LLMSettings): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  const key = settings.apiKey.trim();
+  if (key) headers.Authorization = `Bearer ${key}`;
+  return headers;
+}
+
 /** 요청 한 번. 성공하면 content 문자열, 실패하면 재시도 가능한지 보존한 오류를 던진다. */
 async function requestOnce(
   settings: LLMSettings,
@@ -282,10 +292,7 @@ async function requestOnce(
   try {
     res = await fetch(endpoint, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${settings.apiKey}`,
-      },
+      headers: headersFor(settings),
       body: JSON.stringify({
         model: settings.model,
         messages,

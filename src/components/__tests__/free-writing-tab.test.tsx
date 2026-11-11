@@ -32,7 +32,7 @@ describe("FreeWritingTab", () => {
   it("설정이 완성되기 전에는 평가를 막고 안내한다", async () => {
     render(
       <FreeWritingTab
-        settings={{ ...settings, apiKey: "" }}
+        settings={{ ...settings, model: "" }}
         onGoSettings={() => {}}
       />,
     );

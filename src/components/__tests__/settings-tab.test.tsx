@@ -22,6 +22,22 @@ describe("SettingsTab", () => {
     expect(onSaved).toHaveBeenCalledWith(settings);
   });
 
+  it("API 키가 없어도 저장·연결 테스트를 사용할 수 있다 (Ollama 등)", async () => {
+    const onSaved = vi.fn();
+    const keyless: LLMSettings = {
+      host: "http://localhost:11434/v1",
+      model: "m",
+      apiKey: "",
+    };
+    render(<SettingsTab settings={keyless} onSaved={onSaved} />);
+    const user = userEvent.setup();
+
+    expect(screen.getByRole("button", { name: /연결 테스트/ })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "저장" }));
+    expect(onSaved).toHaveBeenCalledWith(keyless);
+  });
+
   it("다른 탭에서 저장된 값이 바뀌면 입력창이 따라간다", () => {
     const { rerender } = render(
       <SettingsTab settings={settings} onSaved={() => {}} />,

@@ -333,6 +333,25 @@ describe("chatCompletion", () => {
     expect(init.signal?.aborted).toBe(false);
   });
 
+  it("API 키가 없으면 Authorization 헤더를 보내지 않는다 (Ollama 등)", async () => {
+    const m = mockFetchOk({ choices: [{ message: { content: "ok" } }] });
+    await chatCompletion(
+      { host: "http://localhost:11434/v1", model: "m", apiKey: "" },
+      [{ role: "user", content: "hi" }],
+    );
+    const [, init] = m.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+    expect(headers["Content-Type"]).toBe("application/json");
+
+    // 키가 있으면 보낸다
+    await chatCompletion(settings, [{ role: "user", content: "hi" }]);
+    const [, init2] = m.mock.calls[1] as [string, RequestInit];
+    expect((init2.headers as Record<string, string>).Authorization).toBe(
+      "Bearer sk-test",
+    );
+  });
+
   it("에러 메시지에 표시하는 프로바이더 본문에서 시크릿을 마스킹한다", async () => {
     vi.stubGlobal(
       "fetch",

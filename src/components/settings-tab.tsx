@@ -150,7 +150,7 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
               htmlFor="llm-apikey"
               className="mb-1.5 block text-sm font-semibold text-slate-700"
             >
-              API Key
+              API Key <span className="font-normal text-slate-400">(선택)</span>
             </label>
             <div className="flex gap-2">
               <input
@@ -170,6 +170,9 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
                 {showKey ? "가리기" : "표시"}
               </button>
             </div>
+            <p className="mt-1.5 text-xs text-slate-500">
+              Ollama 등 API 키가 없는 OpenAI 호환 호스트는 비워 두세요.
+            </p>
           </div>
         </div>
 
@@ -185,7 +188,7 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
           <button
             type="button"
             onClick={handleTest}
-            disabled={test.status === "testing" || !canSave || !apiKey.trim()}
+            disabled={test.status === "testing" || !canSave}
             className="rounded-xl border border-indigo-300 px-5 py-2.5 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {test.status === "testing" ? "테스트 중..." : "🔌 연결 테스트"}
