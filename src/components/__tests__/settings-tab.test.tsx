@@ -89,3 +89,47 @@ describe("SettingsTab", () => {
     expect(screen.getByText("요청 대상: https://h.ai/v1/chat/completions")).toBeInTheDocument();
   });
 });
+
+const testConnectionMock = vi.hoisted(() => vi.fn());
+
+// 실제 checkHost는 살리고 testConnection만 대체한다 (host 검증 테스트가 함께 있어서)
+vi.mock("@/lib/llm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/llm")>();
+  return {
+    ...actual,
+    testConnection: (...args: unknown[]) => testConnectionMock(...args),
+  };
+});
+
+describe("SettingsTab — 연결 테스트 취소 (리뷰 3-10)", () => {
+  it("취소하면 오류로 표시하지 않고 '테스트 중…'에서 빠져나온다", async () => {
+    testConnectionMock.mockImplementation(
+      (_settings: unknown, options?: { signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () =>
+            reject(new Error("aborted")),
+          );
+        }),
+    );
+
+    render(
+      <SettingsTab settings={settings} onSaved={() => {}} />,
+    );
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /연결 테스트/ }));
+    expect(await screen.findByText("테스트 중...")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /취소/ }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /연결 테스트/ }),
+    ).toBeEnabled();
+    expect(testConnectionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "https://h.ai/v1" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+});

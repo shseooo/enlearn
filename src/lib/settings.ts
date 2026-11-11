@@ -1,5 +1,6 @@
 import type { LLMSettings } from "./types";
 import { safeSetItem } from "./storage";
+import { checkHost } from "./host";
 
 const STORAGE_KEY = "enlearn.settings";
 const CHANGE_EVENT = "enlearn:settings-changed";
@@ -80,5 +81,8 @@ export function getSettingsServerSnapshot(): LLMSettings {
  * Ollama 같은 로컬/게이트웨이 호스트는 키 없이 OpenAI 호환 API를 제공한다.
  */
 export function isSettingsComplete(s: LLMSettings): boolean {
-  return Boolean(s.host.trim() && s.model.trim());
+  if (!s.host.trim() || !s.model.trim()) return false;
+  // host가 형식적으로 잘못됐으면(스킴 오입력 등) "완성"으로 보지 않는다.
+  // 그래야 호출 실패 전에 설정 화면으로 되돌아갈 수 있다.
+  return checkHost(s.host).ok;
 }

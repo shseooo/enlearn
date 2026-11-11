@@ -99,3 +99,23 @@ describe("useSyncExternalStore 스냅샷", () => {
     expect(getSettingsServerSnapshot()).toBe(getSettingsServerSnapshot());
   });
 });
+
+describe("isSettingsComplete — host 검증 (리뷰 2 3-13)", () => {
+  const base = { apiKey: "k" };
+
+  it("형식이 잘못된 host는 '완성'으로 보지 않는다", () => {
+    for (const host of ["ftp://a.com", "not a // url", "   ", "javascript:alert(1)"]) {
+      expect(isSettingsComplete({ host, model: "m", ...base })).toBe(false);
+    }
+  });
+
+  it("스킴이 없어도 해석되는 host는 완성으로 본다 (설정에서 보정된다)", () => {
+    for (const host of ["api.openai.com/v1", "localhost:11434/v1"]) {
+      expect(isSettingsComplete({ host, model: "m", ...base })).toBe(true);
+    }
+  });
+
+  it("모델이 비면 완성되지 않는다", () => {
+    expect(isSettingsComplete({ host: "https://a.com/v1", model: "  ", ...base })).toBe(false);
+  });
+});

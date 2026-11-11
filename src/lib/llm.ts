@@ -13,78 +13,11 @@ export interface ChatMessage {
   content: string;
 }
 
-/** host 검증 결과. 설정 화면의 인라인 검증에서도 그대로 사용한다. */
-export type HostCheck =
-  | { ok: true; endpoint: string }
-  | { ok: false; message: string };
+// host 검증·엔드포인트 만들기·http 경고는 src/lib/host.ts로 분리했다.
+// (설정 화면·백업 화면이 llm의 mock 없이도 쓸 수 있어야 한다)
+import { buildEndpoint, checkHost, hostWarning, type HostCheck } from "./host";
 
-/**
- * host를 검증해서 /chat/completions 엔드포인트를 만든다.
- * - https://api.openai.com      -> https://api.openai.com/v1/chat/completions
- * - https://api.openai.com/v1   -> https://api.openai.com/v1/chat/completions
- * - http://localhost:11434/v1/  -> http://localhost:11434/v1/chat/completions
- * - .../v1/chat/completions (이미 전체 URL) -> 그대로
- *
- * 스킴이 없는 입력("api.openai.com/v1" 같은 흔한 오타)은 http(s)를 붙여 보정한다.
- * 보정하지 않으면 fetch가 현재 origin 기준 상대 경로로 해석해
- * Authorization(API 키)가 앱 자체 도메인으로 전송된다.
- */
-/** 스킴 없는 host 입력의 기본 프로토콜. localhost·포트 명시는 http로 본다. */
-function schemeForHostless(raw: string): "http" | "https" {
-  const authority = raw.split("/")[0];
-  if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(authority)) return "http";
-  if (/^[\w.-]+:\d+$/.test(authority)) return "http";
-  return "https";
-}
-
-export function checkHost(host: string): HostCheck {
-  const raw = host.trim().replace(/\/+$/, "");
-  if (!raw) return { ok: false, message: "Host를 입력해주세요." };
-
-  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw)
-    ? raw
-    : `${schemeForHostless(raw)}://${raw}`;
-  let url: URL;
-  try {
-    url = new URL(candidate);
-  } catch {
-    return {
-      ok: false,
-      message: "Host를 해석할 수 없습니다. 예: https://api.openai.com/v1",
-    };
-  }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    return { ok: false, message: "http(s) 프로토콜만 지원합니다." };
-  }
-  if (!url.hostname) {
-    return { ok: false, message: "Host에 도메인(또는 호스트:포트)이 필요합니다." };
-  }
-
-  // origin은 trailing slash를 포함하지 않으므로 경로만 정규화해 붙인다.
-  const path = url.pathname.replace(/\/+$/, "");
-  const base = `${url.origin}${path}`;
-  if (base.endsWith("/chat/completions")) return { ok: true, endpoint: base };
-  if (base.endsWith("/v1")) return { ok: true, endpoint: `${base}/chat/completions` };
-  return { ok: true, endpoint: `${base}/v1/chat/completions` };
-}
-
-/**
- * 저장은 허용하되 경고할 만한 host 설정. (오류 자체는 checkHost가 이미 걸러낸다)
- * 원격 http는 API 키가 평문으로 나가므로 반드시 알려준다.
- */
-export function hostWarning(host: string): string | null {
-  const check = checkHost(host);
-  if (!check.ok || check.endpoint.startsWith("https://")) return null;
-  const authority = new URL(check.endpoint).host;
-  if (/^(localhost|127\.0\.0\.1|\[::1\])/.test(authority)) return null;
-  return "http 호스트입니다. API 키가 평문으로 전송됩니다. https를 지원하는 프로바이더로 바꾸는 것을 권장합니다.";
-}
-
-export function buildEndpoint(host: string): string {
-  const check = checkHost(host);
-  if (!check.ok) throw new Error(check.message);
-  return check.endpoint;
-}
+export { buildEndpoint, checkHost, hostWarning, type HostCheck };
 
 /**
  * 프로바이더 본문을 화면에 표시할 수 있게 정리한다.
@@ -96,9 +29,12 @@ export function sanitizeProviderBody(body: string, limit = 300): string {
     .replace(/(bearer\s+)[^\s"',}]+/gi, "$1[마스킹]")
     .replace(/sk-[A-Za-z0-9_\-]{4,}/g, "sk-[마스킹]")
     .replace(
-      /((?:api[_-]?key|access[_-]?token|authorization|secret)["']?\s*[:=]\s*)["']?[^\s"',}]+/gi,
+      /((?:api[_-]?key|access[_-]?token|authorization|secret|set-cookie)["']?\s*[:=]\s*)["']?[^\s"',}]+/gi,
       "$1[마스킹]",
-    );
+    )
+    // 프로바이더 오류 페이지에는 키 자체가 실리기도 한다: Azure 32자리 hex, JWT
+    .replace(/\b[0-9a-f]{32}\b/gi, "[키마스킹]")
+    .replace(/\beyJ[A-Za-z0-9_+/\-]{8,}\.[A-Za-z0-9_+/\-]{8,}\.[A-Za-z0-9_+/\-]*/g, "[토큰마스킹]");
   return masked.replace(/\s+/g, " ").trim().slice(0, limit);
 }
 
@@ -185,6 +121,8 @@ function extractContentFromSse(body: string): ExtractedContent | null {
 
 /** LLM 호출 옵션 */
 export interface ChatOptions {
+  /** 재시도를 포함한 전체 대기 시간 상한(ms) */
+  totalBudgetMs?: number;
   temperature?: number;
   maxTokens?: number;
   /** 취소 버튼 등으로 중단할 때 쓰는 신호 */
@@ -206,15 +144,26 @@ function isAbortError(e: unknown): boolean {
 function anySignal(signals: AbortSignal[]): AbortSignal {
   if (typeof AbortSignal.any === "function") return AbortSignal.any(signals);
   const controller = new AbortController();
+  const detachers: (() => void)[] = [];
+  const detach = () => {
+    for (const off of detachers) off();
+    detachers.length = 0;
+  };
+  controller.signal.addEventListener("abort", detach, { once: true });
   for (const s of signals) {
-    if (s.aborted) controller.abort(s.reason);
-    else
-      s.addEventListener("abort", () => controller.abort(s.reason), {
-        once: true,
-      });
+    if (s.aborted) {
+      controller.abort(s.reason);
+      break;
+    }
+    const onAbort = () => controller.abort(s.reason);
+    s.addEventListener("abort", onAbort, { once: true });
+    detachers.push(() => s.removeEventListener("abort", onAbort));
   }
   return controller.signal;
 }
+
+/** 재시도를 다 더한 전체 대기 예산(시도별 타임아웃 × 시도 횟수보다 짧게 둔다) */
+export const LLM_TOTAL_BUDGET_MS = 240_000;
 
 function cancellationMessage(userSignal?: AbortSignal): string {
   if (userSignal?.aborted) return "요청을 취소했습니다.";
@@ -332,7 +281,9 @@ async function requestOnce(
   }
 
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
+    // 오류 본문은 사용자가 그대로 읽는 문장이다. 긴 HTML 오류 페이지를
+    // 통째로 넣지 않는다.
+    const body = (await res.text().catch(() => "")).slice(0, 500);
     throw new HttpError(
       res.status,
       res.statusText,
@@ -344,7 +295,7 @@ async function requestOnce(
 
   // 본문을 먼저 텍스트로 받아 형식을 직접 판별한다.
   // (res.json()은 SSE/비JSON 본문에서 실패해 원인을 숨기므로)
-  const body = await res.text().catch(() => "");
+  const body = (await res.text().catch(() => "")).slice(0, 500);
   if (!body && signal.aborted)
     throw new Error(cancellationMessage(options.signal));
   const contentType = res.headers.get("content-type") ?? "";
@@ -399,6 +350,8 @@ export async function chatCompletionDetailed(
   const endpoint = buildEndpoint(settings.host);
   const retries = Math.max(0, options.retries ?? DEFAULT_RETRIES);
   const baseDelay = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+  // 시도별 120초 × 3 + 백오프면 최대 6분을 기다리게 된다. 전체 예산을 둔다.
+  const deadline = Date.now() + (options.totalBudgetMs ?? LLM_TOTAL_BUDGET_MS);
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (options.signal?.aborted) throw new Error("요청을 취소했습니다.");
@@ -415,8 +368,16 @@ export async function chatCompletionDetailed(
       const retryable =
         error instanceof NetworkError ||
         (error instanceof HttpError && error.retryable);
+      const wait = retryDelayMs(error, attempt, baseDelay);
       if (!retryable || attempt === retries || signal.aborted) throw error;
-      await sleep(retryDelayMs(error, attempt, baseDelay), signal);
+      if (Date.now() + wait > deadline) {
+        throw new Error(
+          `${error.message} (전체 대기 시간 ${Math.round(
+            (options.totalBudgetMs ?? LLM_TOTAL_BUDGET_MS) / 1000,
+          )}초를 넘어 더 시도하지 않습니다.)`,
+        );
+      }
+      await sleep(wait, signal);
     }
   }
   throw new Error("LLM을 호출할 수 없습니다.");

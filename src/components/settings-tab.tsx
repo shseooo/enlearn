@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { LLMSettings } from "@/lib/types";
 import { checkHost, testConnection } from "@/lib/llm";
+import { useCancellable } from "@/lib/use-cancellable";
 import BackupCard from "./backup-card";
 import ProgressReset from "./progress-reset";
 
@@ -31,6 +32,8 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
   const [showKey, setShowKey] = useState(false);
   const [saved, setSaved] = useState(false);
   const [test, setTest] = useState<TestState>({ status: "idle" });
+  const { begin, cancel } = useCancellable();
+  const testSeq = useRef(0);
 
   const host = draft.host;
   const model = draft.model;
@@ -62,20 +65,37 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
     savedTimer.current = setTimeout(() => setSaved(false), 2000);
   }
 
+  /**
+   * 연결 테스트도 취소할 수 있게 한다. 다른 탭과 달리 여기만 취소 수단이 없어
+   * 프로바이더가 멈추면 120초를 그대로 서 있어야 했다(리뷰 3-10).
+   */
   async function handleTest() {
+    const seq = ++testSeq.current;
+    const stale = () => seq !== testSeq.current;
+    const { signal } = begin();
     setTest({ status: "testing" });
     try {
-      const reply = await testConnection({
-        host: host.trim(),
-        model: model.trim(),
-        apiKey: apiKey.trim(),
-      });
+      const reply = await testConnection(
+        {
+          host: host.trim(),
+          model: model.trim(),
+          apiKey: apiKey.trim(),
+        },
+        { signal },
+      );
+      if (stale() || signal.aborted) return;
       setTest({ status: "ok", message: `연결 성공! LLM 응답: ${reply}` });
     } catch (e) {
+      if (stale() || signal.aborted) return; // 취소는 오류가 아니다
       setTest({
         status: "error",
         message: e instanceof Error ? e.message : "연결 테스트에 실패했습니다.",
       });
+    } finally {
+      // 취소하면 "테스트 중…"에 갇히지 않고 빠져나온다
+      if (!stale()) {
+        setTest((t) => (t.status === "testing" ? { status: "idle" } : t));
+      }
     }
   }
 
@@ -186,6 +206,15 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
           >
             {saved ? "저장됨 ✓" : "저장"}
           </button>
+          {test.status === "testing" && (
+            <button
+              type="button"
+              onClick={cancel}
+              className="rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+            >
+              취소
+            </button>
+          )}
           <button
             type="button"
             onClick={handleTest}
