@@ -74,8 +74,11 @@ export function buildEndpoint(host: string): string {
   return check.endpoint;
 }
 
+/** 추출된 답변. fromReasoning은 "답변 대신 추론 조각만 얻은 경우" */
+type ExtractedContent = { text: string; fromReasoning: boolean };
+
 /** JSON 응답에서 콘텐츠 문자열을 추출한다. (호환 호스트별 형식 차이 대응) */
-function extractContentFromJson(data: unknown): string | null {
+function extractContentFromJson(data: unknown): ExtractedContent | null {
   if (typeof data !== "object" || data === null) return null;
   const choices = (data as { choices?: unknown }).choices;
   if (!Array.isArray(choices)) return null;
@@ -93,10 +96,11 @@ function extractContentFromJson(data: unknown): string | null {
     typeof (c.message as { content?: unknown }).content === "string" &&
     (c.message as { content: string }).content.trim()
   ) {
-    return (c.message as { content: string }).content;
+    return { text: (c.message as { content: string }).content, fromReasoning: false };
   }
   // 2) choices[0].message 자체가 문자열
-  if (typeof c.message === "string" && c.message.trim()) return c.message;
+  if (typeof c.message === "string" && c.message.trim())
+    return { text: c.message, fromReasoning: false };
   // 3) 스트림 조각: choices[0].delta.content
   if (
     typeof c.delta === "object" &&
@@ -104,10 +108,11 @@ function extractContentFromJson(data: unknown): string | null {
     typeof (c.delta as { content?: unknown }).content === "string" &&
     (c.delta as { content: string }).content
   ) {
-    return (c.delta as { content: string }).content;
+    return { text: (c.delta as { content: string }).content, fromReasoning: false };
   }
   // 4) 레거시 completions 형식: choices[0].text
-  if (typeof c.text === "string" && c.text.trim()) return c.text;
+  if (typeof c.text === "string" && c.text.trim())
+    return { text: c.text, fromReasoning: false };
   // 5) 추론(reasoning) 모델 폴백: content가 생성되지 않고 (예: finish_reason: "length")
   //    생각 과정만 있는 경우 reasoning_content를 마지막 수단으로 사용
   if (
@@ -117,14 +122,19 @@ function extractContentFromJson(data: unknown): string | null {
       "string" &&
     (c.message as { reasoning_content: string }).reasoning_content.trim()
   ) {
-    return (c.message as { reasoning_content: string }).reasoning_content;
+    return {
+      text: (c.message as { reasoning_content: string }).reasoning_content,
+      fromReasoning: true,
+    };
   }
   return null;
 }
 
 /** SSE(stream) 응답에서 delta 콘텐츠 조각들을 조합해 추출한다. */
-function extractContentFromSse(body: string): string | null {
+function extractContentFromSse(body: string): ExtractedContent | null {
   let acc = "";
+  let sawAnswer = false;
+  let sawReasoning = false;
   for (const line of body.split(/\r?\n/)) {
     const t = line.trim();
     if (!t.startsWith("data:")) continue;
@@ -132,13 +142,17 @@ function extractContentFromSse(body: string): string | null {
     if (payload === "[DONE]") break;
     try {
       const data: unknown = JSON.parse(payload);
-      const content = extractContentFromJson(data);
-      if (content) acc += content;
+      const found = extractContentFromJson(data);
+      if (!found) continue;
+      acc += found.text;
+      if (found.fromReasoning) sawReasoning = true;
+      else sawAnswer = true;
     } catch {
       // 파싱 안 되는 조각은 건너뜀
     }
   }
-  return acc.trim() ? acc : null;
+  if (!acc.trim()) return null;
+  return { text: acc, fromReasoning: !sawAnswer && sawReasoning };
 }
 
 /** LLM 호출 옵션 */
@@ -246,7 +260,7 @@ async function requestOnce(
   options: ChatOptions,
   endpoint: string,
   signal: AbortSignal,
-): Promise<string> {
+): Promise<ExtractedContent> {
   let res: Response;
   try {
     res = await fetch(endpoint, {
@@ -291,7 +305,7 @@ async function requestOnce(
     throw new Error(cancellationMessage(options.signal));
   const contentType = res.headers.get("content-type") ?? "";
 
-  let content: string | null = null;
+  let content: ExtractedContent | null = null;
   if (contentType.includes("event-stream")) {
     // 호스트가 stream: false를 무시하고 SSE 스트림을 반환하는 경우
     content = extractContentFromSse(body);
@@ -326,6 +340,18 @@ export async function chatCompletion(
   messages: ChatMessage[],
   options: ChatOptions = {},
 ): Promise<string> {
+  return (await chatCompletionDetailed(settings, messages, options)).text;
+}
+
+/**
+ * chatCompletion과 같지만 답변이 "추론(reasoning) 조각인지"까지 알려준다.
+ * 추론만 얻은 경우 그 텍스트를 학습자용 답변처럼 보여주면 안 된다.
+ */
+export async function chatCompletionDetailed(
+  settings: LLMSettings,
+  messages: ChatMessage[],
+  options: ChatOptions = {},
+): Promise<ExtractedContent> {
   const endpoint = buildEndpoint(settings.host);
   const retries = Math.max(0, options.retries ?? DEFAULT_RETRIES);
   const baseDelay = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
@@ -350,6 +376,37 @@ export async function chatCompletion(
     }
   }
   throw new Error("LLM을 호출할 수 없습니다.");
+}
+
+/** 호출 종류별 기본 max_tokens — 추론(reasoning) 모델은 "생각"에도 토큰을 쓴다. */
+const MAX_TOKENS = {
+  evaluation: 1200,
+  shortJson: 700,
+  followUp: 900,
+} as const;
+
+/**
+ * 답변 텍스트를 얻는다. 답변 대신 추론 조각만 온 경우는 명확한 오류로 바꾼다.
+ * (추론 독백을 피드백·번역처럼 보여주면 학습자가 엉뚱한 글을 읽게 된다)
+ */
+async function requestAssistantText(
+  settings: LLMSettings,
+  messages: ChatMessage[],
+  options: ChatOptions,
+  maxTokens: number,
+): Promise<string> {
+  const result = await chatCompletionDetailed(settings, messages, {
+    ...options,
+    maxTokens: options.maxTokens ?? maxTokens,
+  });
+  if (result.fromReasoning) {
+    throw new Error(
+      "모델이 답변을 끝내지 못하고 추론만 반환했습니다. " +
+        "max_tokens를 늘리거나 호스트에서 reasoning(생각) 길이를 줄여 주세요. " +
+        `(추론 앞부분: ${result.text.slice(0, 120)}…)`,
+    );
+  }
+  return result.text;
 }
 
 const JSON_SCHEMA = [
@@ -394,13 +451,14 @@ export async function evaluateFreeWriting(
   sentence: string,
   options: ChatOptions = {},
 ): Promise<EvaluationResult> {
-  const raw = await chatCompletion(
+  const raw = await requestAssistantText(
     settings,
     [
       { role: "system", content: freeWritingSystemPrompt() },
       { role: "user", content: `평가할 영어 문장:\n"""${sentence}"""` },
     ],
     options,
+    MAX_TOKENS.evaluation,
   );
   return parseEvaluation(raw);
 }
@@ -429,13 +487,14 @@ export async function evaluateTranslation(
     );
   }
 
-  const raw = await chatCompletion(
+  const raw = await requestAssistantText(
     settings,
     [
       { role: "system", content: translationSystemPrompt() },
       { role: "user", content: userContent.join("\n\n") },
     ],
     options,
+    MAX_TOKENS.evaluation,
   );
   return parseEvaluation(raw);
 }
@@ -455,7 +514,7 @@ export async function generateKoreanExercise(
   options: ChatOptions = {},
 ): Promise<KoreanExercise> {
   const trimmedTopic = topic?.trim() ?? "";
-  const raw = await chatCompletion(
+  const raw = await requestAssistantText(
     settings,
     [
       {
@@ -479,6 +538,7 @@ export async function generateKoreanExercise(
       },
     ],
     { ...options, temperature: options.temperature ?? 0.8 },
+    MAX_TOKENS.shortJson,
   );
   return parseKoreanExercise(raw);
 }
@@ -490,7 +550,7 @@ export async function translateSentenceToKorean(
   sentence: string,
   options: ChatOptions = {},
 ): Promise<KoreanExercise> {
-  const raw = await chatCompletion(
+  const raw = await requestAssistantText(
     settings,
     [
       {
@@ -505,6 +565,7 @@ export async function translateSentenceToKorean(
       { role: "user", content: `영어 문장:\n"""${sentence}"""` },
     ],
     { ...options, temperature: options.temperature ?? 0.3 },
+    MAX_TOKENS.shortJson,
   );
   return parseKoreanExercise(raw);
 }
@@ -569,7 +630,7 @@ export async function askFollowUp(
     `새 질문: ${question}`,
   ].join("\n");
 
-  const raw = await chatCompletion(
+  const raw = await requestAssistantText(
     settings,
     [
       {
@@ -584,6 +645,7 @@ export async function askFollowUp(
       { role: "user", content: userContent },
     ],
     { ...options, temperature: options.temperature ?? 0.4 },
+    MAX_TOKENS.followUp,
   );
   return raw.trim();
 }

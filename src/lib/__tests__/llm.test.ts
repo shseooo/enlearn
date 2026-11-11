@@ -372,6 +372,33 @@ describe("evaluateFreeWriting", () => {
     expect(r.corrections[0].better).toBe("went");
     expect(r.betterExpression).toBe("I went to the park.");
   });
+  it("평가 요청에는 max_tokens를 보내 추론에 예산을 다 쓰지 않게 한다", async () => {
+    const m = mockFetchOk({
+      choices: [{ message: { content: '{"score": 70, "feedback": "좋아요."}' } }],
+    });
+    await evaluateFreeWriting(settings, "I goed to the park.");
+    const [, init] = m.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.max_tokens).toBe(1200);
+  });
+
+  it("답변 대신 추론만 돌아오면 그 독백을 피드백처럼 보여주지 않고 안내한다", async () => {
+    mockFetchOk({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            reasoning_content:
+              "Let me think about this sentence. The user wrote 'goed'...",
+          },
+          finish_reason: "length",
+        },
+      ],
+    });
+    await expect(
+      evaluateFreeWriting(settings, "I goed to the park."),
+    ).rejects.toThrow(/추론만 반환|답변을 끝내지/);
+  });
 });
 
 describe("generateKoreanExercise", () => {
@@ -396,6 +423,17 @@ describe("generateKoreanExercise", () => {
     });
     const r = await generateKoreanExercise(settings, "normal");
     expect(r.hints).toEqual([]);
+  });
+
+  it("문장 생성 요청에도 max_tokens를 보낸다", async () => {
+    const m = mockFetchOk({
+      choices: [
+        { message: { content: '{"sentence": "배가 고파요.", "hints": ["hungry"]}' } },
+      ],
+    });
+    await generateKoreanExercise(settings, "easy");
+    const [, init] = m.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string).max_tokens).toBe(700);
   });
 
   it("주제를 지정하면 요청 본문에 주제 정보가 포함된다", async () => {
