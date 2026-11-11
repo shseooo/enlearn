@@ -13,6 +13,11 @@ export function repairJson(text: string): string {
   // 후행 쉼: { "a": 1, } / [ 1, 2, ]
   s = s.replace(/,(\s*[}\]])/g, "$1");
 
+  // 잘못된 이스케이프 정리: JSON에서 허용되는 건 \" \\ \/ \b \f \n \r \t \uXXXX 뿐이다.
+  // LLM은 \{ \} \' \( 같은 걸 본문에 섞고, 그러면 전체 파싱이 실패한다.
+  // 역슬래시만 지우고 문자는 남긴다.
+  s = s.replace(/\\(?![\\"/bfnrtu])/g, "");
+
   // 닫히지 않은 문자열·괄호 메우기
   const stack: string[] = [];
   let inString = false;
@@ -20,7 +25,9 @@ export function repairJson(text: string): string {
   for (const ch of s) {
     if (inString) {
       if (escaped) escaped = false;
-      else if (ch === "\\\\") escaped = true;
+      // ch는 한 글자다. "\\"(두 글자)와 비교하면 이 분기는 절대 실행되지 않고,
+      // 이스케이프된 따옴표 때문에 inString 상태가 어긋난다(리뷰 3-6).
+      else if (ch === "\\") escaped = true;
       else if (ch === '"') inString = false;
       continue;
     }

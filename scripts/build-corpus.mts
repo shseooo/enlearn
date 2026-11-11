@@ -11,7 +11,8 @@
  */
 import { inflateRawSync } from "node:zlib";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import type {
   CorpusEntry,
   CorpusFile,
@@ -383,8 +384,8 @@ const BATCH_SYSTEM_PROMPT = `너는 영어 문장을 학습용 한국어로 옮�
 - 각 문장에는 연습 힌트로 그 문장에 나온 영어 단어 2~4개(소문자 기본형)를 곁들인다.
 - 답은 {"items":[{"i":번호,"ko":"한국어 문장","hints":["word"]}]} JSON 하나만. 설명 금지.`;
 
-const LLM_TIMEOUT_MS = 120_000;
-const LLM_RETRIES = 3;
+export const LLM_TIMEOUT_MS = 120_000;
+export const LLM_RETRIES = 3;
 
 /**
  * OpenAI 호환 /chat/completions 호출.
@@ -392,6 +393,70 @@ const LLM_RETRIES = 3;
  * 못하는데 llm.ts가 ./parse, ./types를 그렇게 참조한다. 브라우저 쪽과 동작을
  * 맞춘다(타임아웃, 429/5xx/연결 실패만 재시도, Retry-After 존중, 키 없는 호스트 지원).
  */
+export function retryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+export type ChatAttempt = {
+  ok: boolean;
+  content?: string;
+  retryable: boolean;
+  message: string;
+  /** Retry-After 헤더가 알려준 대기 시간(ms, 없으면 undefined) */
+  retryAfterMs?: number;
+};
+
+/**
+ * 한 번의 요청. 예외를 던지지 않고 결과를 돌려준다.
+ * 이전에 비재시도 응답(400/401)을 try 안에서 던져 자기 catch가 잡아
+ * 무작정 재시도했다 — 재시도 여부와 대기 시간을 여기서 결정한다(리뷰 3-7).
+ */
+export async function requestChatOnce(
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+): Promise<ChatAttempt> {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      const retryable = retryableStatus(res.status);
+      const hint =
+        res.status === 401 || res.status === 403
+          ? " — API 키를 확인하세요"
+          : res.status === 404
+            ? " — host/model 경로를 확인하세요"
+            : "";
+      const wait = Number(res.headers.get("retry-after"));
+      return {
+        ok: false,
+        retryable,
+        message: `HTTP ${res.status} ${res.statusText}${hint}`,
+        retryAfterMs: Number.isFinite(wait) && wait > 0 ? Math.min(wait * 1000, 15_000) : undefined,
+      };
+    }
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    const content = data.choices?.[0]?.message?.content ?? "";
+    if (!content.trim()) {
+      return { ok: false, retryable: true, message: "빈 응답" };
+    }
+    return { ok: true, content, retryable: false, message: "" };
+  } catch (err) {
+    // 연결 실패·타임아웃은 다시 시도할 가치가 있다
+    return {
+      ok: false,
+      retryable: true,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 async function requestChat(
   env: LlmEnv,
   messages: { role: string; content: string }[],
@@ -403,42 +468,21 @@ async function requestChat(
     : `${base.endsWith("/v1") ? base : `${base}/v1`}/chat/completions`;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (env.apiKey) headers.Authorization = `Bearer ${env.apiKey}`;
+  const body = {
+    model: env.model,
+    temperature: 0.2,
+    max_tokens: maxTokens,
+    messages,
+  };
 
   let lastError = "";
   for (let attempt = 0; attempt <= LLM_RETRIES; attempt++) {
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          model: env.model,
-          temperature: 0.2,
-          max_tokens: maxTokens,
-          messages,
-        }),
-        signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
-      });
-      if (!res.ok) {
-        const retryable = res.status === 408 || res.status === 429 || res.status >= 500;
-        const wait = Number(res.headers.get("retry-after")) * 1000;
-        if (!retryable || attempt === LLM_RETRIES) {
-          throw new Error(`HTTP ${res.status} ${res.statusText}`);
-        }
-        lastError = `HTTP ${res.status}`;
-        await sleep(Number.isFinite(wait) && wait > 0 ? Math.min(wait, 15_000) : 800 * 2 ** attempt);
-        continue;
-      }
-      const data = (await res.json()) as {
-        choices?: { message?: { content?: string } }[];
-      };
-      const content = data.choices?.[0]?.message?.content ?? "";
-      if (!content.trim()) throw new Error("빈 응답");
-      return content;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
-      if (attempt === LLM_RETRIES) break;
-      await sleep(800 * 2 ** attempt);
-    }
+    const result = await requestChatOnce(url, headers, body);
+    if (result.ok) return result.content!;
+    lastError = result.message;
+    if (!result.retryable) break; // 잘못된 요청은 재시도해도 똑같이 실패한다
+    if (attempt === LLM_RETRIES) break;
+    await sleep(result.retryAfterMs ?? 800 * 2 ** attempt);
   }
   throw new Error(lastError || "LLM 호출 실패");
 }
@@ -594,7 +638,7 @@ const RATIO: Record<string, number> = {
   hard: 0.25,
 };
 
-function balanceByDifficulty(
+export function balanceByDifficulty(
   entries: CorpusEntry[],
   cap: number,
   seed: number,
@@ -724,4 +768,11 @@ async function main(): Promise<void> {
   console.log(`  → ${join("public", "data", "corpus")}`);
 }
 
-await main();
+// 이 파일을 직접 실행할 때만 빌드를 돌린다 (테스트에서는 순수 함수만 가져온다)
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+
+if (invokedDirectly) {
+  await main();
+}
