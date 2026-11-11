@@ -80,15 +80,30 @@ const flag = (name: string, fallback = ""): string => {
 
 const LANES: CorpusLane[] = (() => {
   const lane = flag("lane", "all");
-  if (lane === "daily") return ["daily"];
-  if (lane === "classic") return ["classic"];
-  return ["daily", "classic"];
+  if (lane === "all") return ["daily", "classic"];
+  if (lane === "daily" || lane === "classic") return [lane];
+  throw new Error(
+    `--lane 은 daily | classic | all 중 하나여야 합니다. (받은 값: ${lane})`,
+  );
 })();
 const OFFLINE = argv.includes("--offline");
 const WITH_LLM = argv.includes("--llm");
-const PER_BOOK = Number(flag("per-book", "180"));
-const DAILY_CAP = Number(flag("daily-cap", "3000"));
-const CLASSIC_CAP = Number(flag("classic-cap", "1400"));
+
+/** 숫자 아닌 값을 Number()로 바꾸면 NaN이 되어 밸런싱이 조용히 깨진다. */
+const positiveInt = (name: string, fallback: number): number => {
+  const raw = flag(name, String(fallback));
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(
+      `--${name} 은 0보다 큰 정수여야 합니다. (받은 값: ${raw})`,
+    );
+  }
+  return n;
+};
+
+const PER_BOOK = positiveInt("per-book", 180);
+const DAILY_CAP = positiveInt("daily-cap", 3000);
+const CLASSIC_CAP = positiveInt("classic-cap", 1400);
 const ROOT = process.cwd();
 const CACHE_DIR = join(ROOT, ".corpus-cache");
 const OUT_DIR = join(ROOT, "public", "data", "corpus");
