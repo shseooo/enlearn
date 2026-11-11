@@ -84,6 +84,8 @@ LLM이 문장을 **창작**하면 한국어가 어색하고, 정답(영어)까�
 
 한 번 내려받아 정제된 JSON으로 저장합니다. 앱은 이 파일만 쓰므로 **런타임에 외부 사이트로 요청을 보내지 않습니다**.
 
+파일 크기는 `daily.json` 615KB / `classics.json` 441KB(한국어 번역 포함)입니다. 번역 연습 화면이 `classics.json`을 먼저 받고, 레인을 바꿀 때 `daily.json`을 받습니다. 정적 호스팅의 gzip/브로티 압축이 체감 속도를 크게 좌우합니다.
+
 ```bash
 npm run corpus                     # 두 레인 모두 (원본은 .corpus-cache/ 에 캐시)
 npm run corpus -- --lane=daily     # 일상 회화만
@@ -109,6 +111,27 @@ npm run corpus -- --llm --batch=12 --concurrency=2   # 요청 단위·동시성 
 | 💬 일상 회화 | Tatoeba (manythings.org/anki `kor-eng.zip`) | CC-BY 2.0 (France) — 문장 id는 각 항목 `sourceId` | 3,000문장 |
 | 📖 동화 명문장 | Project Gutenberg: 앨리스, 거울을 통한 이상한 나라의 앨리스, 피터팬, 오즈의 마법사, 비밀의 화원, 버드나무를 타고, 피노키오, 벨벳 토끼, 이솝우화(2종), 안데르센, 그림 형제, 한국 요정 이야기, 한국 옛날 이야기 | 퍼블릭 도메인 | 1,400문장 (책당 180개 제한) |
 
+### 사전 번역을 LLM 없이 채우기
+
+지금은 `classics.json`의 1,400문장에 한국어가 **모두 채워져 있습니다**. 따라서 동화 레인에서는 앱을 열었을 때 LLM 번역 호출이 일어나지 않습니다(설정이 비어 있어도 풀 수 있습니다).
+
+LLM 접속 정보 없이 번역을 넣는 절차는 이렇게 합니다. 빌더는 `.corpus-cache/translations.json`을 먼저 읽으므로, 그 캐시를 채우면 **요청 0건**으로 같은 파이프라인을 통과합니다.
+
+```bash
+node scripts/dump-untranslated.mts           # 번역 없는 문장을 .corpus-cache/worklist.tsv로 (행 번호 + 원문)
+# worklist.tsv를 100문장씩 나눠 .corpus-cache/ko/chunk-XXXX.txt에 번역. 각 줄은 "<worklist행번호>\t<번역>"
+node scripts/check-translations.mts ko/chunk-0200.txt   # 줄별 언어 오염 검사 (한글 외 문자 검출)
+node scripts/merge-translations.mts .corpus-cache/ko/chunk-0200.txt#100   # 캐시에 합침 (번호 불일치면 거부)
+node scripts/audit-translations.mts                     # 코퍼스 전체 감사: 누역·혼입·모양·중복
+ENLEARN_LLM_HOST=https://placeholder.invalid ENLEARN_LLM_MODEL=placeholder ENLEARN_LLM_API_KEY=placeholder \
+  npm run corpus -- --lane=classic --offline --llm            # 캐시로만 채우고 요청은 하지 않음
+```
+
+- `merge-translations.mts`는 각 줄의 행 번호가 작업 목록 위치와 다르면 **파일 전체를 거부**합니다. 순서가 한 줄만 어긋나도 번역이 전부 다른 문장에 붙기 때문입니다.
+- `check-translations.mts`는 한글 외 문자(라틴·일본 가나·중일한자·키릴·태국·베트남 문자 등)를 잡아냅니다. 외래 고유명사·단위를 허용하려면 `--allow=단어,단어`를 씁니다.
+- `audit-translations.mts`는 코드 0으로 끝나야 통과입니다. 같은 한국어 번역이 두 문장에 붙어 있으면 **행 어긋남의 신호**로 알려줍니다.
+- 캐시 항목의 `hints`는 빈 배열로 둡니다. 빌더가 계산한 빈도 기반 힌트를 덮어쓰지 않기 위한 약속입니다.
+
 > ⚠️ **『어린왕자』는 제외했습니다.** 1943년 미국 출판본이라 미국 기준 저작권이 남아 있어 파일을 함께 넣을 수 없습니다. 같은 결의 『벨벳 토끼』『버드나무를 타고』로 대체했습니다.
 
 난이도와 힌트는 **LLM 없이 규칙으로** 계산합니다 (`src/lib/corpus-tools.ts`): 어휘 빈도로 희귀 어휘 수·어절 수·절 수를 점수로 매긴 뒤, **레인 안의 백분위**로 쉬움/보통/어려움을 나눕니다. (고정 문턱만 쓰면 19세기 문체가 전부 "어려움"으로 분류되어 코퍼스 1,400개 중 쉬움이 114개뿐이었습니다.) 비율은 `--classic-cap`, `--daily-cap`, `--per-book`으로 조정합니다.
@@ -129,7 +152,7 @@ npm run check      # typecheck + lint + test 한 번에
 ## ✅ 테스트
 
 ```bash
-npm test           # vitest run (318개 테스트 / 23개 파일)
+npm test           # vitest run (339개 테스트 / 26개 파일)
 npm run test:watch # watch 모드
 ```
 
@@ -157,6 +180,9 @@ npm run test:watch # watch 모드
 - `src/lib/__tests__/use-cancellable.test.ts` — `cancel()` 후 `isCurrent()` 계약, 새 호출 대체
 - `src/app/__tests__/error.test.tsx` — 오류 바운더리(다시 시도)
 - `scripts/__tests__/build-corpus.test.mts` — 재시도 분류, 난이도 배분 비율·상한, 같은 seed 재현
+- `scripts/__tests__/foreign-text.test.mts` — 번역 검사 규칙: 라틴·가나·한자·키릴·태국 문자 검출, 허용 목록은 정확히 일치할 때만
+- `scripts/__tests__/translation-workflow.test.mts` — 사전 번역 도구사슬: 작업 행 번호와 코퍼스 배열 번호 분리, 어긋난 원고 거부, 혼입 경고, 빌드 미반영 감지
+- `scripts/__tests__/corpus-data.test.mts` — 커밋된 코퍼스 데이터: 누역 없음, 한국어 외 문자 혼입 없음, 원문 중복 없음, 힌트 형식
 - `src/app/__tests__/page.test.tsx` — 탭 시맨틱(tablist/tab/tabpanel), 입력 유지, 출처 라이선스 표기
 
 ## 🔄 백업 / 복구
@@ -221,7 +247,11 @@ src/
 │   └── types.ts                # 공용 타입 (코퍼스 타입 포함)
 
 scripts/
-└── build-corpus.mts      # 내려받기·정제·난이도/힌트 → public/data/corpus/*.json
+├── build-corpus.mts      # 내려받기·정제·난이도/힌트 → public/data/corpus/*.json
+├── dump-untranslated.mts # 번역 없는 코퍼스 문장을 작업 목록으로 내보내기
+├── merge-translations.mts# 사람 번역을 번역 캐시에 합치기 (행 번호 검증)
+├── check-translations.mts# 번역 줄의 언어 오염 검사 (한글 외 문자)
+└── audit-translations.mts# 코퍼스 전체 감사: 누역·혼입·모양·중복 번역
 
 public/data/corpus/
 ├── daily.json            # 💬 일상 회화 (Tatoeba)
