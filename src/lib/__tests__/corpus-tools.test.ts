@@ -349,8 +349,23 @@ describe("키·어절 계산", () => {
     expect(words("Be off, home!")).toEqual(["Be", "off", "home"]);
   });
 
-  it("entryKey는 레인을 포함한다", () => {
-    const key = entryKey({ lane: "classic", en: "The rabbit ran." });
-    expect(key).toBe("classic:the rabbit ran");
+  it("entryKey는 레인을 포함하고 정규화 문장의 짧은 해시다", () => {
+    const key = entryKey({ lane: "classic", en: "The  rabbit RAN!" });
+    expect(key).toBe(entryKey({ lane: "classic", en: "the rabbit ran" }));
+    expect(key.startsWith("classic:")).toBe(true);
+    expect(key.length).toBeLessThan(40);
+  });
+
+  it("앞부분이 같은 긴 문장도 다른 키를 준다 (120자 잘림 충돌 방지)", () => {
+    const prefix = "The quick brown fox jumps over the lazy dog ".repeat(6);
+    const a = entryKey({ lane: "classic", en: `${prefix}one` });
+    const b = entryKey({ lane: "classic", en: `${prefix}two` });
+    expect(a).not.toBe(b);
+  });
+
+  it("레인이 다르면 키가 다르다", () => {
+    expect(entryKey({ lane: "daily", en: "same" })).not.toBe(
+      entryKey({ lane: "classic", en: "same" }),
+    );
   });
 });

@@ -385,7 +385,20 @@ export function pickHints(
   return window.slice(0, 4).map((r) => r.hint);
 }
 
-/** 코퍼스 항목의 안정적 키 (레인 + 출처 + 정규화 문장) */
+/** 코퍼스 항목의 저장소 키 (레인 + 정규화 문장의 짧은 해시)
+ *  긴 문장을 그대로 넣으면 120자로 잘려 앞부분이 같은 두 문장이 같은 키가 된다.
+ *  그래서 길이 + FNV-1a 해시를 쓴다. (저장소 키이므로 암호학적 해시는 필요 없다) */
 export function entryKey(entry: Pick<CorpusEntry, "lane" | "en">): string {
-  return `${entry.lane}:${normalizeKey(entry.en)}`.slice(0, 120);
+  const normalized = normalizeKey(entry.en);
+  return `${entry.lane}:${normalized.length}:${hash36(normalized)}`;
+}
+
+/** FNV-1a → 36진 문자열 */
+function hash36(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
 }

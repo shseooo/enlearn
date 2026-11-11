@@ -69,6 +69,25 @@ describe("코퍼스 로딩", () => {
     vi.unstubAllGlobals();
   });
 
+  it("필수 필드가 깨진 코퍼스는 조용히 폴백하지 않고 에러를 던진다", async () => {
+    // lane/난이도/힌트가 없는 항목을 통과시키면 난이도 필터가 아무것도
+    // 매칭하지 못해 재출제 폴백으로 조용히 빠진다.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          lane: "daily",
+          generatedAt: "x",
+          sources: [],
+          entries: [{ en: "I am hungry.", ko: null, source: "Tatoeba" }],
+        }),
+      }),
+    );
+    await expect(loadCorpus("daily")).rejects.toThrow(/형식이 올바르지/);
+    vi.unstubAllGlobals();
+  });
+
   it("항목이 영어 문장이 아니면 형식 오류를 낸다", async () => {
     vi.stubGlobal(
       "fetch",
@@ -164,7 +183,7 @@ describe("푼 기록", () => {
   });
 
   it("깨진 값이 들어 있어도 기본값으로 동작한다", () => {
-    window.localStorage.setItem("enlearn.seen.v1", "{깨진 json");
+    window.localStorage.setItem("enlearn.seen.v2", "{깨진 json");
     expect(seenCount()).toBe(0);
     markSeen("daily:x");
     expect(isSeen("daily:x")).toBe(true);
@@ -172,6 +191,14 @@ describe("푼 기록", () => {
 });
 
 describe("동화 문장의 한국어 캐시", () => {
+  it("힌트가 문자열 배열이 아니면 캐시를 무시한다", () => {
+    window.localStorage.setItem(
+      "enlearn.kocache.v2",
+      JSON.stringify({ k: { ko: "문장.", hints: [1, 2] } }),
+    );
+    expect(getCachedKorean("k")).toBeNull();
+  });
+
   it("번역 캐시 개수를 세고 레인별로 지울 수 있다", () => {
     cacheKorean("classic:alice", "안녕.", ["hello"]);
     cacheKorean("classic:oz", "잘 가.", ["bye"]);

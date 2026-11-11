@@ -11,8 +11,9 @@ import type {
 } from "./types";
 import { entryKey } from "./corpus-tools";
 
-const SEEN_KEY = "enlearn.seen.v1";
-const KO_CACHE_KEY = "enlearn.kocache.v1";
+// v2: entryKey가 해시 기반으로 바뀌어 v1 값은 재사용할 수 없다 (기록 초기화).
+const SEEN_KEY = "enlearn.seen.v2";
+const KO_CACHE_KEY = "enlearn.kocache.v2";
 
 export const CORPUS_URLS: Record<CorpusLane, string> = {
   daily: "/data/corpus/daily.json",
@@ -31,17 +32,34 @@ export const LANE_LABELS: Record<CorpusLane, string> = {
 const fileCache = new Map<CorpusLane, CorpusFile>();
 const pending = new Map<CorpusLane, Promise<CorpusFile>>();
 
+const DIFFICULTIES = ["easy", "normal", "hard"];
+
+function isCorpusEntry(value: unknown): value is CorpusEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const e = value as Record<string, unknown>;
+  if (typeof e.en !== "string" || !e.en.trim()) return false;
+  if (e.ko !== null && typeof e.ko !== "string") return false;
+  if (typeof e.source !== "string") return false;
+  if (e.sourceId !== null && typeof e.sourceId !== "string") return false;
+  if (typeof e.lane !== "string" || !LANE_LABELS[e.lane as CorpusLane])
+    return false;
+  if (typeof e.difficulty !== "string" || !DIFFICULTIES.includes(e.difficulty))
+    return false;
+  if (
+    !Array.isArray(e.hints) ||
+    !e.hints.every((h) => typeof h === "string" && h.trim())
+  )
+    return false;
+  return true;
+}
+
 function isCorpusFile(value: unknown): value is CorpusFile {
   if (typeof value !== "object" || value === null) return false;
   const v = value as { entries?: unknown; lane?: unknown };
   if (!Array.isArray(v.entries)) return false;
-  return v.entries.every(
-    (e) =>
-      typeof e === "object" &&
-      e !== null &&
-      typeof (e as CorpusEntry).en === "string" &&
-      (e as CorpusEntry).en.trim().length > 0,
-  );
+  // lane/난이도/힌트까지 검사한다: 깨진 파일을 통과시키면 난이도 필터가
+  // 아무것도 매칭하지 못해 조용히 재출제 폴백으로 빠진다.
+  return v.entries.every(isCorpusEntry);
 }
 
 /** 테스트/사전 주입용 */
@@ -279,8 +297,17 @@ export interface CachedKorean {
 export function getCachedKorean(key: string): CachedKorean | null {
   const store = readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
   const value = store[key];
-  if (!value || typeof value.ko !== "string" || !value.ko.trim()) return null;
-  return { ko: value.ko, hints: Array.isArray(value.hints) ? value.hints : [] };
+  if (
+    !value ||
+    typeof value.ko !== "string" ||
+    !value.ko.trim() ||
+    // 캐시된 힌트를 그대로 UI state에 넣으므로 문자열 배열인지 확인한다
+    !Array.isArray(value.hints) ||
+    !value.hints.every((h) => typeof h === "string")
+  ) {
+    return null;
+  }
+  return { ko: value.ko, hints: value.hints };
 }
 
 export function cacheKorean(key: string, ko: string, hints: string[]): void {
