@@ -38,6 +38,34 @@ function mockFetchOk(
   return fetchMock;
 }
 
+function mockFetchError(
+  status: number,
+  opts: { statusText?: string; body?: string; retryAfter?: string } = {},
+) {
+  return {
+    ok: false,
+    status,
+    statusText: opts.statusText ?? "Error",
+    headers: {
+      get: (name: string) =>
+        name.toLowerCase() === "retry-after" ? (opts.retryAfter ?? null) : null,
+    },
+    text: async () => opts.body ?? "server busy",
+  };
+}
+
+function mockOkResponse(content: unknown) {
+  const body = JSON.stringify(content);
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    headers: { get: (name: string) => (name.toLowerCase() === "content-type" ? "application/json" : null) },
+    json: async () => JSON.parse(body),
+    text: async () => body,
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -126,25 +154,76 @@ describe("chatCompletion", () => {
   });
 
   it("HTTP 에러면 상태 코드가 포함된 에러를 던진다", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 401,
-        statusText: "Unauthorized",
-        text: async () => "invalid api key",
-      }),
+    const m = vi.fn().mockResolvedValue(
+      mockFetchError(401, { statusText: "Unauthorized", body: "invalid api key" }),
     );
+    vi.stubGlobal("fetch", m);
     await expect(
       chatCompletion(settings, [{ role: "user", content: "hi" }]),
     ).rejects.toThrow(/HTTP 401/);
+    // 잘못된 키/모델은 두 번 시도해도 같으므로 재시도하지 않는다
+    expect(m).toHaveBeenCalledTimes(1);
   });
 
-  it("네트워크 실패면 연결 오류 메시지를 던진다", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fail")));
+  it("네트워크 실패는 재시도하고 결국 연결 오류 메시지를 던진다", async () => {
+    const m = vi.fn().mockRejectedValue(new TypeError("fail"));
+    vi.stubGlobal("fetch", m);
     await expect(
-      chatCompletion(settings, [{ role: "user", content: "hi" }]),
+      chatCompletion(settings, [{ role: "user", content: "hi" }], {
+        retryDelayMs: 0,
+      }),
     ).rejects.toThrow(/연결할 수 없습니다/);
+    expect(m).toHaveBeenCalledTimes(3); // 1회 + 재시도 2회
+  });
+
+  it("retries: 0이면 재시도하지 않는다", async () => {
+    const m = vi.fn().mockRejectedValue(new TypeError("fail"));
+    vi.stubGlobal("fetch", m);
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }], {
+        retries: 0,
+      }),
+    ).rejects.toThrow(/연결할 수 없습니다/);
+    expect(m).toHaveBeenCalledTimes(1);
+  });
+
+  it("429는 Retry-After를 존중해 다시 시도하고, 5xx도 다시 시도한다", async () => {
+    const m = vi
+      .fn()
+      .mockResolvedValueOnce(
+        mockFetchError(429, {
+          statusText: "Too Many Requests",
+          retryAfter: "0",
+        }),
+      )
+      .mockResolvedValueOnce(mockOkResponse({ choices: [{ message: { content: "ok" } }] }));
+    vi.stubGlobal("fetch", m);
+    const out = await chatCompletion(settings, [{ role: "user", content: "hi" }], {
+      retryDelayMs: 0,
+    });
+    expect(out).toBe("ok");
+    expect(m).toHaveBeenCalledTimes(2);
+
+    const m5 = vi.fn().mockResolvedValue(mockFetchError(503, { statusText: "Busy" }));
+    vi.stubGlobal("fetch", m5);
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }], {
+        retryDelayMs: 0,
+      }),
+    ).rejects.toThrow(/HTTP 503/);
+    expect(m5).toHaveBeenCalledTimes(3);
+  });
+
+  it("Retry-After 초 값을 그대로 기다린다", async () => {
+    const m = vi
+      .fn()
+      .mockResolvedValueOnce(mockFetchError(429, { retryAfter: "1" }))
+      .mockResolvedValueOnce(mockOkResponse({ choices: [{ message: { content: "ok" } }] }));
+    vi.stubGlobal("fetch", m);
+    const started = Date.now();
+    await chatCompletion(settings, [{ role: "user", content: "hi" }]);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(900);
+    expect(m).toHaveBeenCalledTimes(2);
   });
 
   it("content가 누락된 응답이면 실제 응답 앞부분이 포함된 에러를 던진다", async () => {

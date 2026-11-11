@@ -147,6 +147,10 @@ export interface ChatOptions {
   maxTokens?: number;
   /** 취소 버튼 등으로 중단할 때 쓰는 신호 */
   signal?: AbortSignal;
+  /** 연결 실패·429·5xx 재시도 횟수 (기본 2) */
+  retries?: number;
+  /** 재시도 대기 기반 시간(ms). 테스트 등에서 0으로 줄일 수 있다. */
+  retryDelayMs?: number;
 }
 
 /** 응답 없이 무한정 기다리지 않기 위한 기본 제한 (빌드 스크립트도 같은 방식을 쓴다) */
@@ -178,20 +182,74 @@ function cancellationMessage(userSignal?: AbortSignal): string {
   );
 }
 
-/** OpenAI 호환 /chat/completions API를 호출해 응답 본문(content)을 반환한다. */
-export async function chatCompletion(
+/** 연결 실패(CORS·DNS·오프라인). 잠시 후 다시 시도해 볼 만한 오류 */
+class NetworkError extends Error {}
+
+/** HTTP 상태 코드를 보존하는 내부 오류. 사용자에게는 message만 보인다. */
+class HttpError extends Error {
+  constructor(
+    readonly status: number,
+    statusText: string,
+    body: string,
+    readonly retryAfter: string | null,
+    readonly retryable: boolean,
+  ) {
+    super(`HTTP ${status} ${statusText}${body ? `: ${body.slice(0, 300)}` : ""}`);
+    this.name = "HttpError";
+  }
+}
+
+/** 429/5xx/시간초과처럼 잠시 뒤에 성공할 수 있는 상태 */
+export function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 429 || status >= 500;
+}
+
+const DEFAULT_RETRIES = 2;
+const DEFAULT_RETRY_DELAY_MS = 800;
+const MAX_RETRY_DELAY_MS = 15_000;
+
+/** Retry-After(초 또는 HTTP-date)를 우선하고, 없으면 지수 백오프 */
+function retryDelayMs(error: unknown, attempt: number, base: number): number {
+  const header = error instanceof HttpError ? error.retryAfter : null;
+  if (header) {
+    const seconds = Number.parseFloat(header);
+    if (Number.isFinite(seconds)) {
+      return Math.min(MAX_RETRY_DELAY_MS, Math.max(0, seconds * 1000));
+    }
+    const when = Date.parse(header);
+    if (!Number.isNaN(when)) {
+      return Math.min(MAX_RETRY_DELAY_MS, Math.max(0, when - Date.now()));
+    }
+  }
+  return Math.min(MAX_RETRY_DELAY_MS, base * 2 ** attempt);
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (ms <= 0 || signal.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
+
+/** 요청 한 번. 성공하면 content 문자열, 실패하면 재시도 가능한지 보존한 오류를 던진다. */
+async function requestOnce(
   settings: LLMSettings,
   messages: ChatMessage[],
-  options: ChatOptions = {},
+  options: ChatOptions,
+  endpoint: string,
+  signal: AbortSignal,
 ): Promise<string> {
-  const timeoutSignal = AbortSignal.timeout(LLM_TIMEOUT_MS);
-  const signal = options.signal
-    ? anySignal([options.signal, timeoutSignal])
-    : timeoutSignal;
-
   let res: Response;
   try {
-    res = await fetch(buildEndpoint(settings.host), {
+    res = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -210,15 +268,20 @@ export async function chatCompletion(
     if (isAbortError(e) || signal.aborted) {
       throw new Error(cancellationMessage(options.signal));
     }
-    throw new Error(
+    throw new NetworkError(
       "서버에 연결할 수 없습니다. (네트워크 또는 CORS 문제일 수 있습니다.)",
     );
   }
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    const detail = body ? `: ${body.slice(0, 300)}` : "";
-    throw new Error(`HTTP ${res.status} ${res.statusText}${detail}`);
+    throw new HttpError(
+      res.status,
+      res.statusText,
+      body,
+      res.headers.get("retry-after"),
+      isRetryableStatus(res.status),
+    );
   }
 
   // 본문을 먼저 텍스트로 받아 형식을 직접 판별한다.
@@ -251,6 +314,42 @@ export async function chatCompletion(
     );
   }
   return content;
+}
+
+/**
+ * OpenAI 호환 /chat/completions API를 호출해 응답 본문(content)을 반환한다.
+ * 연결 실패·429·5xx는 Retry-After를 존중해 최대 options.retries번 다시 시도한다.
+ * (400/401 같은 설정 오류는 두 번 돈다 해도 소용이ないので 재시도하지 않는다)
+ */
+export async function chatCompletion(
+  settings: LLMSettings,
+  messages: ChatMessage[],
+  options: ChatOptions = {},
+): Promise<string> {
+  const endpoint = buildEndpoint(settings.host);
+  const retries = Math.max(0, options.retries ?? DEFAULT_RETRIES);
+  const baseDelay = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (options.signal?.aborted) throw new Error("요청을 취소했습니다.");
+
+    const timeoutSignal = AbortSignal.timeout(LLM_TIMEOUT_MS);
+    const signal = options.signal
+      ? anySignal([options.signal, timeoutSignal])
+      : timeoutSignal;
+
+    try {
+      return await requestOnce(settings, messages, options, endpoint, signal);
+    } catch (e) {
+      const error = e instanceof Error ? e : new Error(String(e));
+      const retryable =
+        error instanceof NetworkError ||
+        (error instanceof HttpError && error.retryable);
+      if (!retryable || attempt === retries || signal.aborted) throw error;
+      await sleep(retryDelayMs(error, attempt, baseDelay), signal);
+    }
+  }
+  throw new Error("LLM을 호출할 수 없습니다.");
 }
 
 const JSON_SCHEMA = [
