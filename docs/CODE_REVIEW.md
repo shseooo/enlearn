@@ -3,6 +3,7 @@
 - 리뷰 일자: 2026-11-11
 - 리뷰 대상: `main` @ `1272d35` (작업 트리 clean)
 - 리뷰 방식: 전체 소스 정독 + `tsc --noEmit` / `eslint` / `vitest` 실행 + 코퍼스 데이터·빌드 파이프라인 실측
+- 처리 상태: 3절의 15개 항목은 **전부 처리**했다. 항목별 커밋과 검증 결과는 [6. 처리 결과](#6-처리-결과-2026-11-11-항목별-커밋)
 
 ## 1. 점검 결과 요약
 
@@ -307,3 +308,45 @@ daily.json    3,000 = easy 1,050 / normal 1,350 / hard 600
 difficulty=hard, sourceId=a, hard 문장 seen 처리 후
  → 반환: difficulty="easy", recycled=true  (안 푼 문장인데 "다시 나온 것"으로 표시)
 ```
+
+---
+
+## 6. 처리 결과 (2026-11-11, 항목별 커밋)
+
+리뷰에 나온 15개 항목을 **항목별로 분리 커밋**했다. 각 커밋은 재현 가능한 회귀 테스트를 함께 담았다.
+
+| 항목 | 커밋 | 처리 내용 |
+| --- | --- | --- |
+| 🔴 3-1 Host 검증 | `d3ebde9` | `checkHost()`가 절대 http(s) URL만 허용하고, 스킴 없는 값은 `https://`(localhost/`host:port`는 `http://`)로 보정 후 **origin+pathname만** 재조립한다. 설정 화면에 해석된 요청 주소/오류를 인라인 표시하고 저장도 검증 통과 시에만 가능하다. |
+| 🔴 3-2 평가 경합 | `bcabcd6` | 요청 토큰(`requestSeq`)으로 늦은 응답을 버리고, `canPick`에 `!loading`·`canEvaluate`에 `!picking`을 넣어 동시 요청을 막는다. 회귀 테스트: 평가 중 두 받기 버튼 비활성. |
+| 🔴 3-3 `pickEntry` 폴백 | `2509755` | 폴백 풀 대신 **순위 정렬**(난이도+출처+미풀음 → 난이도+미풀음 → 출처+미풀음 → 미풀음 전체 → 푼 문장). `recycled`는 항목별로 `entryKey(entry) in seen`로 계산. 난이도를 출처보다 먼저 완화한다. |
+| 🔴 3-4 난이도 캘리브레이션 | `e12f4b7` | `computeGradeCutoffs()`로 **레인 내 백분위** 등급을 계산(고정 문턱은 폴백)하고 코퍼스를 재생성했다. classics `114/405/881 → 420/560/420`, daily `1050/1350/600 → 900/1350/750`. |
+| 🟠 3-5 설정 동기화·이중 저장 | `bdddcf2` | 입력은 `edited`(편집분)만 들고 값은 props의 `settings`에서 읽는다 → 다른 탭의 저장을 따라가고 저장하지 않은 편집은 보호한다. 저장은 `onSaved` 단일 경로(localStorage 쓰기·이벤트 2중 발생 제거). 신규 `settings-tab.test.tsx`. |
+| 🟠 3-6 타임아웃/취소 | `37b262b` | `AbortSignal.timeout(120s)` + `useCancellable()` 훅, 모든 탭에 **취소** 버튼. 새 요청이 이전 요청을 취소하고, 취소는 오류로 표시하지 않는다. `role="status"`/`role="alert"`로 진행·오류 발표. |
+| 🟠 3-7 재시도/백오프 | `d7ddb1b` | `NetworkError`/`HttpError`로 재시도 가능 여부를 보존하고 408/409/429/5xx·연결 실패만 최대 2회 재시도. `Retry-After`(초·HTTP-date) 우선, 없으면 800ms 지수 백오프(최대 15초), 대기 중에도 취소 가능. |
+| 🟠 3-8 max_tokens/추론 노출 | `f5eff26` | 평가 1200 / 짧은 JSON 700 / 추가 질문 900 기본 `max_tokens`. 추출 결과가 추론 전용이면(`chatCompletionDetailed.fromReasoning`) 독백을 보여주지 않고 안내 오류로 바꾼다. |
+| 🟠 3-9 질문 컨텍스트 팽창 | `2212e11` | 요청에는 최근 3턴만, 답변은 500자로 발췌(`FOLLOW_UP_HISTORY_TURNS`/`clipText`). 화면 히스토리는 그대로 유지. |
+| 🟠 3-10 원시 응답 노출 | `b95419a` | `sanitizeProviderBody()`로 `sk-*`·Bearer·api_key 등을 마스킹하고 한 줄로 축약. `repairJson()`으로 후행 쉼/잘린 괄호를 복원해 재파싱하고, 복원 실패 시 raw JSON 대신 안내 문구를 보여준다. |
+| 🟡 3-11 `splitSentences` O(n²) | `ccaae71` | 후방 탐색 1회(`Int32Array nextWord`)로 선형화. 14권 34,112문장이 기존 구현과 **바이트 단위로 동일**함을 검증했고, 전체 빌드는 18초 → 0.44초. |
+| 🟡 3-12 초기화 UI 없음 | `22c026e` | `clearKoreanCache()`/`koreanCacheCount()` + `useSyncExternalStore` 스냅샷. ⚙️ 설정에 **연습 기록** 섹션(회화/동화 기록·번역 캐시 수 표시, 레인별/전체 초기화). 죽어 있던 `resetSeen`·`seenCount`·`LANE_LABELS`가 실제 코드가 됐다. |
+| 🟡 3-13 힌트 노출 | `36e73b7` | `lemma()`로 원형(base form)을 주고, 문장 첫 단어·고유명사(중간 대문자)·구두점/숫자 파편·축약형·stopword를 제외, 최대 4개. 빌드는 seed=0으로 호출해 항상 0이던 지터 항을 없애고, `seed`가 상위 후보 회전에 실제로 동작한다. |
+| 🟡 3-14 일관성/품질 | `39f39a5` `cd2978c` `4de74e5` `aa53060` `bbb05a5` `0f1e718` `fcd3104` | `entryKey` 해시화(+저장소 v2 승격), `isCorpusFile` 항목별 검증, `getCachedKorean` 힌트 타입 검사 / 스키마 문자열 치환 제거 / 출처 변경·받기 실패 시 상태 정리 + `CopyButton` 타이머 정리 + 내용 기반 `key` / 탭 `tablist`·`tab`·`tabpanel` + 화살표 이동 + 라이선스 푸터 / API 키 선택화(`Authorization` 헤더 생략) / `dailySeed` 로컬 자정 기준 / `SettingsWarning` 공용 분리 |
+| 🟡 3-15 저장소 관행 | `3d571cc` `fa0aba3` `cb53caa` `aa53060` | `npm run typecheck`·`npm run check` 추가, `engines.node >= 23.6.0`, GitHub Actions CI(typecheck→lint→test), `--lane`/`--per-book` 등 인자 검증(NaN·오타 차단), README 숫자·범위 정정, Tatoeba CC-BY / Gutenberg 표기 |
+
+### 처리 후 검증
+
+| 검사 | 결과 |
+| --- | --- |
+| `npm run typecheck` | ✅ 오류 0 |
+| `npm run lint` | ✅ 오류 0 |
+| `npm test` | ✅ **12 files / 174 tests** (리뷰 당시 8 files / 110 tests) |
+| `npm run corpus -- --offline` | ✅ 0.46초, 결정적(다시 돌려도 `generatedAt` 외 차이 없음) |
+| 코퍼스 난이도 분포 | classics 420/560/420 · daily 900/1350/750 |
+| 코퍼스 스키마 | 새 `isCorpusFile` 검사로 실데이터 4,400건 위반 0건 |
+
+### 의도적으로 남겨둔 것 (알고 선택)
+
+- **v1 기록 초기화**: `entryKey`가 해시 기반이 되어 `enlearn.seen.v1` / `enlearn.kocache.v1`은 재사용할 수 없다. 키를 `v2`로 승격했고 기존 받은 문장 기록은 사라진다(구간 마이그레이션은 키 형식 때문에 불가능).
+- **`classics.json`의 `ko`는 여전히 `null`**: 미리 번역하려면 `npm run corpus -- --llm` + LLM 환경변수가 필요하다. 런타임에 번역하고 캐시하며, 잘못된 번역은 새 초기화 UI로 지울 수 있다.
+- **`lemma()`는 규칙 기반 추정**: 불규칙 동사(`ran → run`)는 처리하지 않는다. 힌트는 보조 수단이라 그대로 둔다.
+- **말줄임표 뒤 문장 분리**: `splitSentences`의 기존 동작(분리하지 않음)을 골든 스냅샷 테스트로 고정만 했다. 동작 변경은 코퍼스 재생성 차이로 이어져 이번 범위에서 제외.
