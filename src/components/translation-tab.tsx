@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   CorpusEntry,
+  CorpusFile,
   CorpusLane,
   Difficulty,
   EvaluationResult,
@@ -111,9 +112,25 @@ export default function TranslationTab({
     answer.trim().length > 0 &&
     !loading;
 
-  /** 코퍼스에서 아직 안 풀어본 문장을 하나 꺼낸다. (동화는 첫 한국어만 LLM 번역) */
-  async function handlePickFromCorpus(lane: CorpusLane, signal: AbortSignal) {
-    const file = await loadCorpus(lane);
+  /**
+   * 코퍼스에서 아직 안 풀어본 문장을 하나 꺼낸다. (동화는 첫 한국어만 LLM 번역)
+   * ⚠️ 여기서 markSeen/cacheKorean 같은 쓰기를 하지 않는다. 호출자가 "이 응답을
+   * 적용할 시점인지" 확인한 뒤에만 기록해야, 취소·출처 변경으로 사라진 문장이
+   * 영구 소진되지 않는다.
+   */
+  async function fetchFromCorpus(
+    lane: CorpusLane,
+    signal: AbortSignal,
+  ): Promise<{
+    item: CorpusEntry;
+    key: string;
+    ko: string;
+    hints: string[];
+    fromLlm: boolean;
+    recycled: boolean;
+    file: CorpusFile;
+  }> {
+    const file = await loadCorpus(lane, signal);
     const picked = pickEntry(file, {
       difficulty,
       sourceId: lane === "classic" ? bookId : undefined,
@@ -141,17 +158,18 @@ export default function TranslationTab({
       });
       ko = translated.sentence;
       if (!nextHints.length) nextHints = translated.hints;
-      cacheKorean(key, ko, nextHints);
       fromLlm = true;
     }
 
-    setEntry(item);
-    setKorean(ko);
-    setHints(nextHints);
-    setKoFromLlm(fromLlm);
-    setRecycled(picked.recycled);
-    setSources(sourcesOf(file));
-    markSeen(key);
+    return {
+      item,
+      key,
+      ko,
+      hints: nextHints,
+      fromLlm,
+      recycled: picked.recycled,
+      file,
+    };
   }
 
   /** 문장·평가 상태를 한 번에 정리한다. (입력 중인 영어 답안은 살린다) */
@@ -167,9 +185,10 @@ export default function TranslationTab({
   }
 
   async function handleGetSentence() {
-    // 진행 중인 평가가 있으면 결과를 버린다
-    requestSeq.current += 1;
-    const { signal, isCurrent } = begin();
+    // 진행 중인 평가·문장 받기 결과를 버린다
+    const seq = ++requestSeq.current;
+    const stale = () => seq !== requestSeq.current;
+    const { signal } = begin();
     setPicking(true);
     setPickError(null);
     setResult(null);
@@ -178,19 +197,30 @@ export default function TranslationTab({
     try {
       if (mode === "ai") {
         const next = await generateKoreanExercise(settings, difficulty, topic, {
-        signal,
-      });
+          signal,
+        });
+        if (stale() || signal.aborted) return;
         setEntry(null);
         setKorean(next.sentence);
         setHints(next.hints);
         setKoFromLlm(false);
         setRecycled(false);
       } else {
-        await handlePickFromCorpus(mode, signal);
+        const picked = await fetchFromCorpus(mode, signal);
+        // 취소·출처 변경 뒤에 도착한 응답은 화면에도, 기록에도 손대지 않는다
+        if (stale() || signal.aborted) return;
+        if (picked.fromLlm) cacheKorean(picked.key, picked.ko, picked.hints);
+        markSeen(picked.key);
+        setEntry(picked.item);
+        setKorean(picked.ko);
+        setHints(picked.hints);
+        setKoFromLlm(picked.fromLlm);
+        setRecycled(picked.recycled);
+        setSources(sourcesOf(picked.file));
       }
-      setAnswer("");
+      if (!stale()) setAnswer("");
     } catch (e) {
-      if (!isCurrent() || signal.aborted) return;
+      if (stale() || signal.aborted) return;
       // 실패하면 문장 상태를 완전히 비운다. entry/hints를 남기면
       // 지난 문장의 평가 카드가 새 출처 라벨로 그대로 보인다. (사용자 입력은 살린다)
       clearSentence();
@@ -198,7 +228,7 @@ export default function TranslationTab({
         e instanceof Error ? e.message : "문장을 가져오는 중 오류가 발생했습니다.",
       );
     } finally {
-      if (isCurrent()) setPicking(false);
+      if (!stale()) setPicking(false);
     }
   }
 
@@ -214,7 +244,7 @@ export default function TranslationTab({
       const r = await evaluateTranslation(settings, korean, english, entry?.en, {
         signal,
       });
-      if (stale()) return;
+      if (stale() || signal.aborted) return;
       // 코퍼스 연습에서는 참고 번역 자리에 "실제 출판된 문장"을 보여준다.
       const finalResult: EvaluationResult = entry
         ? { ...r, referenceTranslation: entry.en }

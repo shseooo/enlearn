@@ -78,18 +78,49 @@ export function getCachedCorpus(lane: CorpusLane): CorpusFile | null {
 }
 
 /** 코퍼스 JSON을 내려받는다. 실패하면 원인을 사람이 읽을 수 있는 문장으로 준다. */
-export async function loadCorpus(lane: CorpusLane): Promise<CorpusFile> {
+/** 코퍼스 JSON은 정적 파일이라 30초면 충분히 온다. 그 이상은 연결 문제로 본다. */
+const CORPUS_TIMEOUT_MS = 30_000;
+
+/**
+ * 호출자만 취소한다. 같은 파일을 기다리는 다른 호출(책 드롭다운 등)은
+ * 그대로 두므로, 한 화면의 취소가 다른 화면을 실패시키지 않는다.
+ */
+function withAbort<T>(task: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return task;
+  if (signal.aborted) return Promise.reject(new Error("요청을 취소했습니다."));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("요청을 취소했습니다."));
+    signal.addEventListener("abort", onAbort, { once: true });
+    task.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+export async function loadCorpus(
+  lane: CorpusLane,
+  signal?: AbortSignal,
+): Promise<CorpusFile> {
   const cached = fileCache.get(lane);
   if (cached) return cached;
+  // 이미 취소된 신호로는 요청을 시작하지 않는다 (불필요한 트래픽·실패 로그 방지)
+  if (signal?.aborted) return Promise.reject(new Error("요청을 취소했습니다."));
 
   const inflight = pending.get(lane);
-  if (inflight) return inflight;
+  if (inflight) return withAbort(inflight, signal);
 
   const task = (async () => {
     const url = CORPUS_URLS[lane];
     let res: Response;
     try {
-      res = await fetch(url);
+      res = await fetch(url, { signal: AbortSignal.timeout(CORPUS_TIMEOUT_MS) });
     } catch {
       throw new Error(`코퍼스에 연결할 수 없습니다 (${url}).`);
     }
@@ -113,7 +144,7 @@ export async function loadCorpus(lane: CorpusLane): Promise<CorpusFile> {
   })().finally(() => pending.delete(lane));
 
   pending.set(lane, task);
-  return task;
+  return withAbort(task, signal);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
+import { useRef, useState, useSyncExternalStore } from "react";
 import {
   LANE_SHORT_LABELS,
   REVIEW_INTERVALS,
@@ -92,6 +92,8 @@ export default function ReviewTab({
   } | null>(null);
   const [scoringId, setScoringId] = useState<string | null>(null);
   const { begin, cancel } = useCancellable();
+  // 채점 결과·loading 적용은 호출 번호로 판단한다(취소해도 loading은 꺼야 한다)
+  const requestSeq = useRef(0);
 
   // 서버 렌더에서는 스냅샷이 0이므로 Date를 만드는 함수를 부르지 않는다.
   // (Next 16은 Client Component 렌더 중 new Date()를 불안정 값으로 잡아 prerender를 실패시킨다)
@@ -130,7 +132,9 @@ export default function ReviewTab({
   async function handleScore() {
     if (!current || !answer.trim()) return;
     const id = current.id;
-    const { signal, isCurrent } = begin();
+    const seq = ++requestSeq.current;
+    const stale = () => seq !== requestSeq.current;
+    const { signal } = begin();
     setScoringId(id);
     setScore(null);
     setScoreError(null);
@@ -142,17 +146,17 @@ export default function ReviewTab({
         current.en,
         { signal },
       );
-      if (!isCurrent() || signal.aborted) return;
+      if (stale() || signal.aborted) return;
       setScore({ id, result });
     } catch (e) {
       // 취소는 오류가 아니다 (직전 호출을 끊으면 abort가 터진다)
-      if (!isCurrent() || signal.aborted) return;
+      if (stale() || signal.aborted) return;
       setScoreError({
         id,
         text: e instanceof Error ? e.message : "채점에 실패했습니다.",
       });
     } finally {
-      if (isCurrent()) setScoringId(null);
+      if (!stale()) setScoringId(null);
     }
   }
 

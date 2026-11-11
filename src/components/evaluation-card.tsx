@@ -70,27 +70,30 @@ export default function EvaluationCard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { begin, cancel } = useCancellable();
+  const requestSeq = useRef(0);
 
   const canAsk = isSettingsComplete(settings) && input.trim().length > 0 && !loading;
 
   async function handleSubmit() {
     const question = input.trim();
     if (!question) return;
-    const { signal, isCurrent } = begin();
+    const seq = ++requestSeq.current;
+    const stale = () => seq !== requestSeq.current;
+    const { signal } = begin();
     setLoading(true);
     setError(null);
     try {
       const answer = await askFollowUp(settings, context, result, question, history, {
         signal,
       });
-      if (!isCurrent()) return;
+      if (stale() || signal.aborted) return;
       setHistory((h) => [...h, { question, answer }]);
       setInput("");
     } catch (e) {
-      if (!isCurrent() || signal.aborted) return;
+      if (stale() || signal.aborted) return;
       setError(e instanceof Error ? e.message : "질문 처리 중 오류가 발생했습니다.");
     } finally {
-      if (isCurrent()) setLoading(false);
+      if (!stale()) setLoading(false);
     }
   }
 

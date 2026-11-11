@@ -252,6 +252,78 @@ describe("TranslationTab — 코퍼스 문장", () => {
   });
 });
 
+describe("TranslationTab — 취소·출처 변경 경합 (리뷰 3-2)", () => {
+  /** 응답을 마음대로 늦출 수 있는 fetch로 바꾼다 */
+  function slowFetch() {
+    let resolve!: (res: Response) => void;
+    const promise = new Promise<Response>((r) => (resolve = r));
+    const spy = vi.fn(() => promise);
+    vi.stubGlobal("fetch", spy);
+    return {
+      spy,
+      respond: (body: unknown) =>
+        resolve(
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      restore: () => vi.unstubAllGlobals(),
+    };
+  }
+
+  it("출처를 바꾸면 늦게 도착한 문장은 화면에도 기록에도 남지 않는다", async () => {
+    const fetcher = slowFetch();
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await user.selectOptions(screen.getByLabelText(/문장 출처/), "ai");
+
+    fetcher.respond(dailyFile);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(window.localStorage.getItem("enlearn.seen.v2")).toBeNull();
+    expect(screen.queryByText("톰은 많이 아파 보여.")).not.toBeInTheDocument();
+    expect(fetcher.spy).toHaveBeenCalledTimes(1);
+    fetcher.restore();
+  });
+
+  it("취소한 문장 받기는 그 문장을 영구 소진시키지 않는다", async () => {
+    const fetcher = slowFetch();
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await user.click(screen.getByRole("button", { name: /취소/ }));
+
+    fetcher.respond(dailyFile);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(window.localStorage.getItem("enlearn.seen.v2")).toBeNull();
+    expect(screen.queryByText("톰은 많이 아파 보여.")).not.toBeInTheDocument();
+    // 다시 받으면 같은 문장이 여전히 나올 수 있다
+    prefillCorpus("daily", dailyFile);
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    expect(await screen.findByText("톰은 많이 아파 보여.")).toBeInTheDocument();
+    fetcher.restore();
+  });
+
+  it("코퍼스 응답을 취소하면 오류로 표시하지 않는다", async () => {
+    const fetcher = slowFetch();
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await user.click(screen.getByRole("button", { name: /취소/ }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fetcher.respond(dailyFile);
+    fetcher.restore();
+  });
+});
+
 describe("TranslationTab — 연습 기록 연동", () => {
   it("채점이 끝나면 연습 기록에 남고 복습 큐에 들어간다", async () => {
     prefillCorpus("daily", dailyFile);

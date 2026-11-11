@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { LLMSettings, EvaluationResult } from "@/lib/types";
 import { isSettingsComplete } from "@/lib/settings";
 import { evaluateFreeWriting } from "@/lib/llm";
@@ -25,6 +25,8 @@ export default function FreeWritingTab({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<EvaluationResult | null>(null);
   const { begin, cancel } = useCancellable();
+  // 어떤 호출의 결과를 적용할지 정는 번호. 취소·새 요청 모두 여기서 걸러진다.
+  const requestSeq = useRef(0);
 
   const canSubmit =
     isSettingsComplete(settings) && sentence.trim().length > 0 && !loading;
@@ -32,12 +34,14 @@ export default function FreeWritingTab({
   async function handleSubmit() {
     const trimmed = sentence.trim();
     if (!trimmed) return;
-    const { signal, isCurrent } = begin();
+    const seq = ++requestSeq.current;
+    const stale = () => seq !== requestSeq.current;
+    const { signal } = begin();
     setLoading(true);
     setError(null);
     try {
       const r = await evaluateFreeWriting(settings, trimmed, { signal });
-      if (!isCurrent()) return;
+      if (stale() || signal.aborted) return;
       setResult(r);
       setEvaluatedSentence(trimmed);
       logPractice({
@@ -53,11 +57,11 @@ export default function FreeWritingTab({
       });
     } catch (e) {
       // 취소(사용자·새 요청으로 인한 것)는 오류로 표시하지 않는다
-      if (!isCurrent() || signal.aborted) return;
+      if (stale() || signal.aborted) return;
       setResult(null);
       setError(e instanceof Error ? e.message : "평가 중 오류가 발생했습니다.");
     } finally {
-      if (isCurrent()) setLoading(false);
+      if (!stale()) setLoading(false);
     }
   }
 

@@ -283,3 +283,43 @@ describe("책 목록", () => {
     ]);
   });
 });
+
+describe("코퍼스 요청 취소·타임아웃 (리뷰 3-2)", () => {
+  const responseOf = (file: unknown) =>
+    new Response(JSON.stringify(file), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  it("취소한 호출만 실패하고 같은 파일을 기다리던 다른 호출은 성공한다", async () => {
+    clearCorpusCache();
+    let resolve!: (res: Response) => void;
+    const promise = new Promise<Response>((r) => (resolve = r));
+    vi.stubGlobal("fetch", vi.fn(() => promise));
+
+    const body = file([entry({ en: "Tom looks very sick." })]);
+    const controller = new AbortController();
+    const cancelled = loadCorpus("daily", controller.signal);
+    const survivor = loadCorpus("daily");
+
+    controller.abort();
+    await expect(cancelled).rejects.toThrow(/취소/);
+    resolve(responseOf(body));
+    const loaded = await survivor;
+    expect(loaded.entries).toHaveLength(1);
+    // 취소가 캐시를 망가뜨리지 않았다
+    expect(getCachedCorpus("daily")?.entries).toHaveLength(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("이미 취소된 신호로는 요청을 시작하지 않는다", async () => {
+    clearCorpusCache();
+    const spy = vi.fn();
+    vi.stubGlobal("fetch", spy);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(loadCorpus("daily", controller.signal)).rejects.toThrow(/취소/);
+    expect(spy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+});
