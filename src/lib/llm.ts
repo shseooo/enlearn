@@ -207,18 +207,32 @@ export async function evaluateFreeWriting(
   return parseEvaluation(raw);
 }
 
-/** 번역 연습: 한국어 원문 + 영어 번역을 평가한다. */
+/** 번역 연습: 한국어 원문 + 영어 번역을 평가한다.
+ *  reference를 주면 "실제 출판된 원문"이 있다고 알려주고,
+ *  그 문체까지 흉내내도록 요구하지 않는다. (동화 연습에서 점수가 억울해지는 것 방지) */
 export async function evaluateTranslation(
   settings: LLMSettings,
   korean: string,
   english: string,
+  reference?: string,
 ): Promise<EvaluationResult> {
+  const ref = reference?.trim() ?? "";
+  const userContent = [
+    `원문 (한국어):\n"""${korean}"""`,
+    `사용자의 영어 번역:\n"""${english}"""`,
+  ];
+  if (ref) {
+    userContent.push(
+      `실제 출판된 영어 원문 (참고용):\n"""${ref}"""`,
+      "평가 규칙: 사용자의 문장을 위 원문과 똑같이 고치라고 요구하지 마라. " +
+        "의사가 정확히 전달되는지, 문법과 어휘가 자연스러운지만 보고점수를 매겨라. " +
+        "원문은 더 좋은 예시로만 소개해라.",
+    );
+  }
+
   const raw = await chatCompletion(settings, [
     { role: "system", content: translationSystemPrompt() },
-    {
-      role: "user",
-      content: `원문 (한국어):\n"""${korean}"""\n\n사용자의 영어 번역:\n"""${english}"""`,
-    },
+    { role: "user", content: userContent.join("\n\n") },
   ]);
   return parseEvaluation(raw);
 }
@@ -261,6 +275,31 @@ export async function generateKoreanExercise(
       },
     ],
     { temperature: 0.8 },
+  );
+  return parseKoreanExercise(raw);
+}
+
+/** 코퍼스(동화) 문장을 학습자용 한국어로 번역한다. (창작 금지, 번역만)
+ *  요즘 쓰는 자연스러운 한국어로 옮기고, 번역에 필요한 영어 힌트 단어도 함께 받는다. */
+export async function translateSentenceToKorean(
+  settings: LLMSettings,
+  sentence: string,
+): Promise<KoreanExercise> {
+  const raw = await chatCompletion(
+    settings,
+    [
+      {
+        role: "system",
+        content:
+          "영어 문장을 한국어 학습자에게 보여줄 한국어 문장으로만 번역한다. " +
+          '반드시 {"sentence": "자연스러운 현대 한국어", "hints": ["핵심 영어 단어"]} 형태의 JSON만 출력해라. ' +
+          "sentence는 고어체·문어체가 아니라 오늘 실제로 쓰이는 말투로 옮겨라. " +
+          "설명을 더하거나 문장을 창작하지 마라. " +
+          "hints는 영어로 2~4개, 그 문장의 핵심 어휘를 골라라. JSON 이외의 텍스트는 금지.",
+      },
+      { role: "user", content: `영어 문장:\n"""${sentence}"""` },
+    ],
+    { temperature: 0.3 },
   );
   return parseKoreanExercise(raw);
 }

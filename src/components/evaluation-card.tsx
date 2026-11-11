@@ -40,10 +40,16 @@ export default function EvaluationCard({
   result,
   settings,
   context,
+  referenceLabel = "📖 참고 번역",
+  referenceNote,
 }: {
   result: EvaluationResult;
   settings: LLMSettings;
   context: EvaluationContext;
+  /** 코퍼스 연습에서는 "명문장(원전)" 처럼 제목을 바꾼다. */
+  referenceLabel?: string;
+  /** 출처 표기 (책/저자/Tatoeba id) */
+  referenceNote?: string;
 }) {
   const [history, setHistory] = useState<FollowUpTurn[]>([]);
   const [input, setInput] = useState("");
@@ -117,11 +123,14 @@ export default function EvaluationCard({
       {result.referenceTranslation && (
         <div>
           <h3 className="mb-2 text-sm font-semibold text-slate-700">
-            📖 참고 번역
+            {referenceLabel}
           </h3>
           <blockquote className="rounded-lg border-l-4 border-indigo-300 bg-indigo-50/50 p-3 text-sm font-medium text-slate-700">
             {result.referenceTranslation}
           </blockquote>
+          {referenceNote && (
+            <p className="mt-1 text-xs text-slate-400">{referenceNote}</p>
+          )}
         </div>
       )}
 
