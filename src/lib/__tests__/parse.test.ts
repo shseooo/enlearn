@@ -4,9 +4,36 @@ import {
   normalizeEvaluation,
   parseEvaluation,
   parseKoreanExercise,
+  repairJson,
 } from "../parse";
 
 describe("extractJson", () => {
+  it("후행 쉼처럼 사소한 결함은 복원해 파싱한다", () => {
+    const raw =
+      '{ "score": 85, "feedback": "좋아요.", "corrections": [{"original":"goed","better":"went","reason":"과거형"},], }';
+    const r = parseEvaluation(raw);
+    expect(r.score).toBe(85);
+    expect(r.corrections[0].better).toBe("went");
+  });
+
+  it("잘려서 닫는 괄호가 없는 JSON도 복원한다", () => {
+    const r = parseEvaluation('{"score": 70, "feedback": "좋아요."');
+    expect(r.score).toBe(70);
+    expect(r.feedback).toBe("좋아요.");
+  });
+
+  it("복원할 수 없는 JSON은 raw 덩어리를 화면에 보여주지 않는다", () => {
+    const r = parseEvaluation("{ totally broken ??? ][");
+    expect(r.feedback).not.toContain("totally broken");
+    expect(r.feedback).toMatch(/형식에 맞는 답변/);
+  });
+
+  it("repairJson은 문자열 안의 중괄호를 건드리지 않는다", () => {
+    expect(repairJson('{"feedback": "} 여는 괄호"}')).toBe(
+      '{"feedback": "} 여는 괄호"}',
+    );
+  });
+
   it("일반 JSON 문자열을 파싱한다", () => {
     expect(extractJson('{"a": 1}')).toEqual({ a: 1 });
   });

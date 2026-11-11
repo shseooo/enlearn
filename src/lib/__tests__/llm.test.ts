@@ -6,6 +6,7 @@ import {
   chatCompletion,
   evaluateFreeWriting,
   generateKoreanExercise,
+  sanitizeProviderBody,
   testConnection,
 } from "../llm";
 import type { LLMSettings } from "../types";
@@ -329,6 +330,37 @@ describe("chatCompletion", () => {
     const [, init] = m.mock.calls[0] as [string, RequestInit];
     expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(init.signal?.aborted).toBe(false);
+  });
+
+  it("에러 메시지에 표시하는 프로바이더 본문에서 시크릿을 마스킹한다", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          mockFetchError(401, {
+            statusText: "Unauthorized",
+            body: '{"error":"invalid api_key: sk-abcdef123456  Authorization: Bearer zz99"}',
+          }),
+        ),
+    );
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }]),
+    ).rejects.toThrow(/\[마스킹\]/);
+  });
+
+  it("콘텐츠 없음 오류의 응답 앞부분도 마스킹·한 줄 축약한다", async () => {
+    mockFetchOk(null, {
+      body: '{"debug": "Bearer supersecrettoken"}\nsecond line',
+    });
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }]),
+    ).rejects.toThrow(/Bearer \[마스킹\]/);
+  });
+
+  it("sanitizeProviderBody는 개행을 줄이고 길이로 자른다", () => {
+    expect(sanitizeProviderBody("a\nb\tc")).toBe("a b c");
+    expect(sanitizeProviderBody("aaaaaa", 3)).toBe("aaa");
   });
 
   it("사용자가 취소하면 취소 메시지를 던진다", async () => {

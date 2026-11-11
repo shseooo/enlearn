@@ -74,6 +74,22 @@ export function buildEndpoint(host: string): string {
   return check.endpoint;
 }
 
+/**
+ * 프로바이더 본문을 화면에 표시할 수 있게 정리한다.
+ * 역프록시·게이트웨이 오류에는 키·토큰이 그대로 실릴 수 있으므로 마스킹하고,
+ * 개행은 한 칸으로 줄여 길이 제한 안에 담는다.
+ */
+export function sanitizeProviderBody(body: string, limit = 300): string {
+  const masked = (body ?? "")
+    .replace(/(bearer\s+)[^\s"',}]+/gi, "$1[마스킹]")
+    .replace(/sk-[A-Za-z0-9_\-]{4,}/g, "sk-[마스킹]")
+    .replace(
+      /((?:api[_-]?key|access[_-]?token|authorization|secret)["']?\s*[:=]\s*)["']?[^\s"',}]+/gi,
+      "$1[마스킹]",
+    );
+  return masked.replace(/\s+/g, " ").trim().slice(0, limit);
+}
+
 /** 추출된 답변. fromReasoning은 "답변 대신 추론 조각만 얻은 경우" */
 type ExtractedContent = { text: string; fromReasoning: boolean };
 
@@ -208,7 +224,8 @@ class HttpError extends Error {
     readonly retryAfter: string | null,
     readonly retryable: boolean,
   ) {
-    super(`HTTP ${status} ${statusText}${body ? `: ${body.slice(0, 300)}` : ""}`);
+    const detail = sanitizeProviderBody(body);
+    super(`HTTP ${status} ${statusText}${detail ? `: ${detail}` : ""}`);
     this.name = "HttpError";
   }
 }
@@ -322,7 +339,7 @@ async function requestOnce(
   }
 
   if (!content) {
-    const snippet = body.trim().slice(0, 300) || "(빈 응답)";
+    const snippet = sanitizeProviderBody(body) || "(빈 응답)";
     throw new Error(
       `LLM 응답에서 콘텐츠(content)를 찾을 수 없습니다. 실제 응답 앞부분: ${snippet}`,
     );
