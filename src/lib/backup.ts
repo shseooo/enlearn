@@ -16,6 +16,7 @@ import {
   importSeen,
 } from "./corpus";
 import { loadSettings, saveSettings } from "./settings";
+import { checkHost, hostWarning } from "./llm";
 import { localDateString } from "./corpus";
 import type { PracticeRecord, SrsItem } from "./practice";
 import type { CachedKorean } from "./corpus";
@@ -41,12 +42,44 @@ export interface BackupFile {
     seen: Record<string, string>;
     koreanCache: Record<string, CachedKorean>;
     /** API 키는 넣지 않는다. 연결 설정의 이름만 보관한다. */
-    settings?: { host: string; model: string };
+    settings?: { host: string; model: string; endpoint: string };
   };
 }
 
 export function backupFilename(now = new Date()): string {
   return `enlearn-backup-${localDateString(now)}.json`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** 데이터에서 개수를 세는다. 파일에 적힌 counts는 믿지 않는다(3-4). */
+function countsOf(data: BackupFile["data"]): BackupCounts {
+  return {
+    log: data.log.length,
+    srs: data.srs.length,
+    seen: Object.keys(data.seen).length,
+    koreanCache: Object.keys(data.koreanCache).length,
+  };
+}
+
+/** 연결 설정 백업에 쓸 수 있는 형태인지 검증한다. 통과 실패 = 설정 없음. */
+function safeSettings(value: unknown): BackupFile["data"]["settings"] {
+  if (!isRecord(value)) return undefined;
+  const host = typeof value.host === "string" ? value.host.trim() : "";
+  const model = typeof value.model === "string" ? value.model.trim() : "";
+  if (!host || !model) return undefined;
+  const check = checkHost(host);
+  // 검증되지 않은 host를 저장하면 다음 LLM 호출의 API 키가 제3자 도메인으로 간다
+  if (!check.ok) return undefined;
+  return { host, model, endpoint: check.endpoint };
+}
+
+/** http 원격 호스트 경고 (백업 미리보기·설정 화면에서 같은 문구를 쓴다) */
+export function settingsWarning(settings?: BackupFile["data"]["settings"]): string | null {
+  if (!settings) return null;
+  return hostWarning(settings.host);
 }
 
 export function buildBackup(includeSettings = true): BackupFile {
@@ -59,21 +92,14 @@ export function buildBackup(includeSettings = true): BackupFile {
     app: BACKUP_APP,
     version: BACKUP_VERSION,
     exportedAt: new Date().toISOString(),
-    counts: {
-      log: log.length,
-      srs: srs.length,
-      seen: Object.keys(seen).length,
-      koreanCache: Object.keys(koreanCache).length,
-    },
     data: {
       log,
       srs,
       seen,
       koreanCache,
-      ...(includeSettings
-        ? { settings: { host: settings.host, model: settings.model } }
-        : {}),
+      ...(includeSettings ? { settings: safeSettings(settings) } : {}),
     },
+    counts: countsOf({ log, srs, seen, koreanCache }),
   };
 }
 
@@ -93,7 +119,10 @@ export function parseBackup(text: string): BackupFile {
     throw new Error("enlearn 백업 파일이 아닙니다.");
   }
   const version = typeof o.version === "number" ? o.version : Number(o.version);
-  if (!Number.isFinite(version) || version > BACKUP_VERSION) {
+  if (!Number.isFinite(version) || version < 1) {
+    throw new Error("백업 버전 정보가 없습니다. 이 앱에서 내보낸 파일인지 확인하세요.");
+  }
+  if (version > BACKUP_VERSION) {
     throw new Error(
       `더 새로운 버전(${String(o.version)})의 백업입니다. 앱을 업데이트한 뒤 다시 시도하세요.`,
     );
@@ -106,40 +135,28 @@ export function parseBackup(text: string): BackupFile {
   if (!Array.isArray(d.log) && !Array.isArray(d.srs)) {
     throw new Error("백업에 연습 기록(log)도 복습 큐(srs)도 없습니다.");
   }
+  const payload: BackupFile["data"] = {
+    log: Array.isArray(d.log) ? (d.log as PracticeRecord[]) : [],
+    srs: Array.isArray(d.srs) ? (d.srs as SrsItem[]) : [],
+    seen:
+      typeof d.seen === "object" && d.seen !== null && !Array.isArray(d.seen)
+        ? (d.seen as Record<string, string>)
+        : {},
+    koreanCache:
+      typeof d.koreanCache === "object" &&
+      d.koreanCache !== null &&
+      !Array.isArray(d.koreanCache)
+        ? (d.koreanCache as Record<string, CachedKorean>)
+        : {},
+    settings: safeSettings(d.settings),
+  };
   return {
     app: BACKUP_APP,
     version: BACKUP_VERSION,
     exportedAt: typeof o.exportedAt === "string" ? o.exportedAt : "",
-    counts:
-      typeof o.counts === "object" && o.counts !== null
-        ? (o.counts as BackupCounts)
-        : { log: 0, srs: 0, seen: 0, koreanCache: 0 },
-    data: {
-      log: Array.isArray(d.log) ? (d.log as PracticeRecord[]) : [],
-      srs: Array.isArray(d.srs) ? (d.srs as SrsItem[]) : [],
-      seen:
-        typeof d.seen === "object" && d.seen !== null && !Array.isArray(d.seen)
-          ? (d.seen as Record<string, string>)
-          : {},
-      koreanCache:
-        typeof d.koreanCache === "object" &&
-        d.koreanCache !== null &&
-        !Array.isArray(d.koreanCache)
-          ? (d.koreanCache as Record<string, CachedKorean>)
-          : {},
-      settings:
-        typeof d.settings === "object" &&
-        d.settings !== null &&
-        !Array.isArray(d.settings)
-          ? ((d.settings as Record<string, unknown>).host &&
-              (d.settings as Record<string, unknown>).model
-              ? {
-                  host: String((d.settings as Record<string, unknown>).host),
-                  model: String((d.settings as Record<string, unknown>).model),
-                }
-              : undefined)
-          : undefined,
-    },
+    // 파일에 적힌 counts는 위조·손상될 수 있으므로 실제 내용으로 다시 센다
+    counts: countsOf(payload),
+    data: payload,
   };
 }
 
@@ -152,7 +169,17 @@ export interface RestoreResult {
 }
 
 /** 백업 내용을 저장소에 반영한다. replace=true면 기존 기록을 지우고 채운다. */
-export function restoreBackup(file: BackupFile, replace = false): RestoreResult {
+/**
+ * 백업 내용을 저장소에 반영한다.
+ * replace=true면 기존 기록을 지우고 채운다.
+ * ⚠️ restoreSettings는 기본 false — 연결 설정을 되돌리면 **다음 LLM 호출의 대상**이
+ * 바뀌고 API 키가 그 도메인으로 간다. 별도 확인을 거쳐서만 반영한다.
+ */
+export function restoreBackup(
+  file: BackupFile,
+  replace = false,
+  restoreSettings = false,
+): RestoreResult {
   if (replace) {
     // import*(replace=true)가 빈 목록으로도 저장소를 비운다
     clearKoreanCache();
@@ -164,8 +191,9 @@ export function restoreBackup(file: BackupFile, replace = false): RestoreResult 
     koreanCache: importKoreanCache(file.data.koreanCache, replace),
     settingsRestored: false,
   };
-  if (file.data.settings) {
+  if (restoreSettings && file.data.settings) {
     const current = loadSettings();
+    // API 키는 백업에 없으므로 지금의 키를 그대로 둔다
     saveSettings({
       ...current,
       host: file.data.settings.host,

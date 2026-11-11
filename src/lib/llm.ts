@@ -68,6 +68,18 @@ export function checkHost(host: string): HostCheck {
   return { ok: true, endpoint: `${base}/v1/chat/completions` };
 }
 
+/**
+ * 저장은 허용하되 경고할 만한 host 설정. (오류 자체는 checkHost가 이미 걸러낸다)
+ * 원격 http는 API 키가 평문으로 나가므로 반드시 알려준다.
+ */
+export function hostWarning(host: string): string | null {
+  const check = checkHost(host);
+  if (!check.ok || check.endpoint.startsWith("https://")) return null;
+  const authority = new URL(check.endpoint).host;
+  if (/^(localhost|127\.0\.0\.1|\[::1\])/.test(authority)) return null;
+  return "http 호스트입니다. API 키가 평문으로 전송됩니다. https를 지원하는 프로바이더로 바꾸는 것을 권장합니다.";
+}
+
 export function buildEndpoint(host: string): string {
   const check = checkHost(host);
   if (!check.ok) throw new Error(check.message);

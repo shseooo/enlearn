@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import BackupCard from "../backup-card";
 import { loadLog, logPractice } from "@/lib/practice";
+import { saveSettings } from "@/lib/settings";
 import { BACKUP_APP } from "@/lib/backup";
 
 const VALID = JSON.stringify({
@@ -166,5 +167,83 @@ describe("BackupCard", () => {
       expect(screen.queryByText(/2026-01-02에 내보낸 백업/)).not.toBeInTheDocument(),
     );
     expect(loadLog()).toHaveLength(1);
+  });
+});
+
+describe("BackupCard — 연결 설정 되돌리기 (3-1)", () => {
+  const fileWithSettings = (host: string) =>
+    JSON.stringify({
+      app: BACKUP_APP,
+      version: 1,
+      data: {
+        log: [],
+        srs: [],
+        settings: { host, model: "restored-model" },
+      },
+    });
+
+  it("기본은 꺼져 있고, 켜지 않으면 지금의 연결 설정이 그대로다", async () => {
+    saveSettings({ host: "https://mine.example.com/v1", model: "mine", apiKey: "sk-mine" });
+    render(<BackupCard />);
+    const user = userEvent.setup();
+
+    await user.upload(
+      screen.getByLabelText(/백업 가져오기/),
+      fileOf(fileWithSettings("http://collector.example.net/v1")),
+    );
+
+    const checkbox = screen.getByRole("checkbox", { name: /연결 설정도 되돌리기/ });
+    expect(checkbox).not.toBeChecked();
+    expect(
+      screen.getByText("http://collector.example.net/v1/chat/completions"),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /지금 기록에 합치기/ }));
+    await screen.findByText(/합쳤습니다/);
+    const saved = window.localStorage.getItem("enlearn.settings") ?? "";
+    expect(saved).toContain("mine.example.com");
+    expect(saved).not.toContain("collector");
+  });
+
+  it("확인하고 켜면 host/model만 반영되고 API 키는 그대로다", async () => {
+    saveSettings({ host: "https://mine.example.com/v1", model: "mine", apiKey: "sk-mine" });
+    render(<BackupCard />);
+    const user = userEvent.setup();
+
+    await user.upload(
+      screen.getByLabelText(/백업 가져오기/),
+      fileOf(fileWithSettings("https://backup.example.com/v1")),
+    );
+    await user.click(screen.getByRole("checkbox", { name: /연결 설정도 되돌리기/ }));
+    await user.click(screen.getByRole("button", { name: /지금 기록에 합치기/ }));
+
+    await screen.findByText(/연결 설정/);
+    const saved = window.localStorage.getItem("enlearn.settings") ?? "";
+    expect(saved).toContain("backup.example.com");
+    expect(saved).toContain("restored-model");
+    expect(saved).toContain("sk-mine");
+  });
+
+  it("원격 http 호스트면 키가 평문으로 간다고 경고한다", async () => {
+    render(<BackupCard />);
+    const user = userEvent.setup();
+    await user.upload(
+      screen.getByLabelText(/백업 가져오기/),
+      fileOf(fileWithSettings("http://collector.example.net/v1")),
+    );
+    expect(await screen.findByText(/평문으로 전송/)).toBeInTheDocument();
+  });
+
+  it("검증되지 않는 host는 미리보기에 나타나지 않는다", async () => {
+    render(<BackupCard />);
+    const user = userEvent.setup();
+    await user.upload(
+      screen.getByLabelText(/백업 가져오기/),
+      fileOf(fileWithSettings("ftp://collector.example.net/v1")),
+    );
+    await screen.findByText(/지금 기록에 합치기/);
+    expect(
+      screen.queryByRole("checkbox", { name: /연결 설정도 되돌리기/ }),
+    ).not.toBeInTheDocument();
   });
 });

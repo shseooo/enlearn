@@ -5,6 +5,7 @@ import {
   downloadBackup,
   parseBackup,
   restoreBackup,
+  settingsWarning,
   type BackupFile,
 } from "@/lib/backup";
 import {
@@ -29,6 +30,9 @@ export default function BackupCard() {
   const [fileName, setFileName] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 연결 설정 되돌리기는 다음 LLM 호출 대상(= API 키가 가는 도메인)을 바꾼다.
+  // 그래서 기본은 꺼두고, 사용자가 직접 켜되 목표 주소를 화면에서 확인하게 한다.
+  const [wantSettings, setWantSettings] = useState(false);
 
   function handleExport() {
     try {
@@ -52,6 +56,7 @@ export default function BackupCard() {
       const parsed = parseBackup(text);
       setLoaded(parsed);
       setFileName(file.name);
+      setWantSettings(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "백업을 읽을 수 없습니다.");
     }
@@ -59,7 +64,7 @@ export default function BackupCard() {
 
   function handleRestore(replace: boolean) {
     if (!loaded) return;
-    const result = restoreBackup(loaded, replace);
+    const result = restoreBackup(loaded, replace, wantSettings);
     setLoaded(null);
     if (fileRef.current) fileRef.current.value = "";
     setMessage(
@@ -119,6 +124,32 @@ export default function BackupCard() {
             기록 {loaded.counts.log}개 · 복습 큐 {loaded.counts.srs}개 · 받은 문장{" "}
             {loaded.counts.seen}개 · 번역 캐시 {loaded.counts.koreanCache}개
           </p>
+          {loaded.data.settings && (
+            <label className="mb-3 flex items-start gap-2 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                checked={wantSettings}
+                onChange={(e) => setWantSettings(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                연결 설정도 되돌리기 —{" "}
+                <code className="rounded bg-slate-200 px-1 py-0.5 text-[11px]">
+                  {loaded.data.settings.endpoint}
+                </code>
+                <br />
+                켜면 이후 LLM 요청이 이 주소로 가고{" "}
+                <strong className="font-semibold">현재 API 키가 그 도메인으로 전송</strong>됩니다.
+                처음 보는 파일이라면 끄세요.
+                {settingsWarning(loaded.data.settings) && (
+                  <span className="mt-1 block font-semibold text-rose-600">
+                    ⚠️ {settingsWarning(loaded.data.settings)}
+                  </span>
+                )}
+              </span>
+            </label>
+          )}
+
           <div className="flex flex-wrap gap-2">
             <button
               type="button"

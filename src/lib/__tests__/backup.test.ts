@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BACKUP_APP,
+  settingsWarning,
   backupFilename,
   buildBackup,
   downloadBackup,
@@ -84,6 +85,7 @@ describe("백업 내보내기", () => {
     expect(buildBackup().data.settings).toEqual({
       host: "https://api.example.com/v1",
       model: "test-model",
+      endpoint: "https://api.example.com/v1/chat/completions",
     });
     // 설정을 빼달라고 하면 그것도 빠진다
     expect(buildBackup(false).data.settings).toBeUndefined();
@@ -185,6 +187,7 @@ describe("백업 파일 검증", () => {
 
 describe("백업 복원", () => {
   it("합치기: 기존 기록을 지키면서 더해진다", () => {
+    saveSettings({ host: "https://mine.example.com/v1", model: "mine", apiKey: "sk-super-secret-value" });
     logPractice({
       lane: "classic",
       en: "Existing sentence before restore.",
@@ -228,21 +231,30 @@ describe("백업 복원", () => {
       }),
     );
 
+    // 기본값은 설정을 되돌리지 않는다 (다음 LLM 호출 대상 = 키가 가는 도메인)
     const result = restoreBackup(file);
     expect(result).toEqual({
       log: 1,
       srs: 1,
       seen: 1,
       koreanCache: 1,
-      settingsRestored: true,
+      settingsRestored: false,
     });
     expect(loadLog()).toHaveLength(2);
     const restored = reviewItems().find((x) => x.id === "classic:r1");
     expect(restored?.stage).toBe(2);
     expect(restored?.due).toBe("2099-01-01");
     expect(exportSeen()["classic:9:zzz"]).toBeTruthy();
-    expect(window.localStorage.getItem("enlearn.settings")).toContain("backup.example.com");
-    expect(window.localStorage.getItem("enlearn.settings")).not.toContain("sk-");
+    const untouched = window.localStorage.getItem("enlearn.settings") ?? "";
+    expect(untouched).toContain("mine.example.com");
+    expect(untouched).not.toContain("backup.example.com");
+
+    const again = restoreBackup(file, false, true);
+    expect(again.settingsRestored).toBe(true);
+    const saved = window.localStorage.getItem("enlearn.settings") ?? "";
+    expect(saved).toContain("backup.example.com");
+    // 백업에 키는 없으므로 지금의 키가 그대로 남는다
+    expect(saved).toContain("sk-super-secret-value");
   });
 
   it("대체: 기존 기록·큐·캐시를 지우고 채운다", () => {
@@ -322,5 +334,93 @@ describe("round trip", () => {
     expect(practiceStats().total).toBe(2);
     expect(practiceStats().topMistakes.map((m) => m.original)).toContain("goed");
     expect(practiceStats().topMistakes.map((m) => m.original)).toContain("begin");
+  });
+});
+
+describe("백업된 연결 설정 검증 (3-1)", () => {
+  const withSettings = (settings: unknown) =>
+    JSON.stringify({ app: BACKUP_APP, version: 1, data: { log: [], srs: [], settings } });
+
+  it("검증되지 않는 host는 조용히 버린다", () => {
+    for (const host of ["ftp://api.example.com/v1", "not a // url", "", "  ", {}]) {
+      expect(parseBackup(withSettings({ host, model: "m" })).data.settings).toBeUndefined();
+    }
+  });
+
+  it("model이 없어도 설정을 되돌리지 않는다", () => {
+    expect(
+      parseBackup(withSettings({ host: "https://api.example.com/v1" })).data.settings,
+    ).toBeUndefined();
+  });
+
+  it("staging된 host는 정규화된 endpoint로 보관하고 http는 경고한다", () => {
+    const file = parseBackup(
+      withSettings({ host: "api.example.com/v1/", model: "gpt-4o-mini" }),
+    );
+    expect(file.data.settings?.endpoint).toBe("https://api.example.com/v1/chat/completions");
+
+    const insecure = parseBackup(
+      withSettings({ host: "http://collector.example.net/v1", model: "evil" }),
+    );
+    expect(insecure.data.settings?.endpoint).toBe(
+      "http://collector.example.net/v1/chat/completions",
+    );
+    expect(settingsWarning(insecure.data.settings)).toMatch(/평문/);
+    // localhost http는 정상 사용이라 경고하지 않는다
+    expect(
+      settingsWarning({ host: "http://localhost:11434/v1", model: "llama", endpoint: "x" }),
+    ).toBeNull();
+  });
+
+  it("확인 없이 복원해도 연결 설정은 바뀌지 않는다", () => {
+    saveSettings({ host: "https://safe.example.com/v1", model: "mine", apiKey: "sk-keep" });
+    const file = parseBackup(
+      withSettings({ host: "http://collector.example.net/v1", model: "evil" }),
+    );
+    restoreBackup(file, false, false);
+    expect(window.localStorage.getItem("enlearn.settings")).toContain("safe.example.com");
+    expect(window.localStorage.getItem("enlearn.settings")).not.toContain("collector");
+  });
+});
+
+describe("백업 파일 손상 대응", () => {
+  it("counts가 이상한 값이라도 숫자로 다뤄 크래시하지 않는다", () => {
+    const file = parseBackup(
+      JSON.stringify({
+        app: BACKUP_APP,
+        version: 1,
+        counts: { log: { nested: 1 }, srs: "한 Thousand", seen: null, koreanCache: -3 },
+        data: { log: [], srs: [] },
+      }),
+    );
+    expect(file.counts).toEqual({ log: 0, srs: 0, seen: 0, koreanCache: 0 });
+  });
+
+  it("counts는 실제 내용에서 다시 센다 (파일 값과 달라도)", () => {
+    const file = parseBackup(
+      JSON.stringify({
+        app: BACKUP_APP,
+        version: 1,
+        counts: { log: 9_999, srs: 0, seen: 0, koreanCache: 0 },
+        data: {
+          log: [
+            { date: "2026-01-02", lane: "classic", en: "One sentence.", answer: "a", score: 10 },
+            { date: "2026-01-03", lane: "classic", en: "Two sentence.", answer: "b", score: 20 },
+          ],
+          srs: [],
+          seen: { "classic:1:a": "x" },
+          koreanCache: { "classic:1:a": { ko: "번역", hints: [] } },
+        },
+      }),
+    );
+    expect(file.counts).toEqual({ log: 2, srs: 0, seen: 1, koreanCache: 1 });
+  });
+
+  it("version 0·음수·문자열 '0'은 거부한다", () => {
+    for (const version of [0, -5, "0", "abc"]) {
+      expect(() =>
+        parseBackup(JSON.stringify({ app: BACKUP_APP, version, data: { log: [], srs: [] } })),
+      ).toThrow(/백업 버전/);
+    }
   });
 });
