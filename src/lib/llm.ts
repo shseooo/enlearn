@@ -328,7 +328,7 @@ async function requestOnce(
 /**
  * OpenAI 호환 /chat/completions API를 호출해 응답 본문(content)을 반환한다.
  * 연결 실패·429·5xx는 Retry-After를 존중해 최대 options.retries번 다시 시도한다.
- * (400/401 같은 설정 오류는 두 번 돈다 해도 소용이ないので 재시도하지 않는다)
+ * (400/401 같은 설정 오류는 두 번 시도해도 소용이 없으므로 재시도하지 않는다)
  */
 export async function chatCompletion(
   settings: LLMSettings,
