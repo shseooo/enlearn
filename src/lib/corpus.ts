@@ -97,6 +97,7 @@ export function clearCorpusCache(): void {
   pending.clear();
 }
 
+/** 이미 받아온 코퍼스 파일(메모리 캐시). 주로 테스트·초기화 확인용. */
 export function getCachedCorpus(lane: CorpusLane): CorpusFile | null {
   return fileCache.get(lane) ?? null;
 }
@@ -202,6 +203,7 @@ export function markSeen(key: string): void {
   notifyProgressOnce();
 }
 
+/** 저장된 key 확인. (컴포넌트는 스냅샷을 쓰지만 이 판정은 테스트·internal에서도 쓴다) */
 export function isSeen(key: string): boolean {
   return key in loadSeen();
 }

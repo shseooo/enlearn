@@ -16,6 +16,9 @@ jobs:
           node-version: "24"
           cache: npm
       - run: npm ci
+      # Next 16은 LayoutProps 같은 타입을 .next/types에 생성한다(next-env.d.ts가 참조).
+      # 이 단계가 없으면 클린 체크아웃에서 typecheck만 깨진다.
+      - run: npm run build
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test

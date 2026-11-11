@@ -129,7 +129,7 @@ npm run check      # typecheck + lint + test 한 번에
 ## ✅ 테스트
 
 ```bash
-npm test           # vitest run (248개 테스트 / 17개 파일)
+npm test           # vitest run (318개 테스트 / 23개 파일)
 npm run test:watch # watch 모드
 ```
 
@@ -151,6 +151,12 @@ npm run test:watch # watch 모드
 - `src/components/__tests__/progress-reset.test.tsx` — 연습 기록·번역 캐시·복습 큐 초기화
 - `src/components/__tests__/review-tab.test.tsx` — 복습 플로우(정답 보기·평점·다음 문장), 놓친 횟수, 현황 카드, LLM 채점·취소·실패, 주간 그래프
 - `src/components/__tests__/score-gauge.test.tsx` — 점수 색상·평가 문구
+- `src/components/__tests__/weekly-chart.test.tsx` — 빈 주 렌더링, 막대 정규화, 접근 가능한 설명
+- `src/components/__tests__/storage-warning` / `src/lib/__tests__/storage.test.ts` — 저장 공간 초과 처리
+- `src/lib/__tests__/json.test.ts` — 이스케이프된 따옴표·잘린 JSON·무효한 이스케이프 복원
+- `src/lib/__tests__/use-cancellable.test.ts` — `cancel()` 후 `isCurrent()` 계약, 새 호출 대체
+- `src/app/__tests__/error.test.tsx` — 오류 바운더리(다시 시도)
+- `scripts/__tests__/build-corpus.test.mts` — 재시도 분류, 난이도 배분 비율·상한, 같은 seed 재현
 - `src/app/__tests__/page.test.tsx` — 탭 시맨틱(tablist/tab/tabpanel), 입력 유지, 출처 라이선스 표기
 
 ## 🔄 백업 / 복구
@@ -161,7 +167,11 @@ npm run test:watch # watch 모드
 - **내보내기**: `enlearn-backup-YYYY-MM-DD.json` (연습 기록 · 복습 큐 · 받은 문장 기록 · 번역 캐시)
 - **가져오기**: 파일을 고르면 내용을 미리 보여주고 **합치기** 또는 **대체**(확인 후)로 반영합니다.
   형식이 다른 파일은 한국어 메시지로 거절하고, 오래된/먼저 모르는 항목은 조용히 건너뜁니다.
+  복원 개수는 "실제로 저장된 개수"를 알려줍니다(상한으로 잘린 경우 포함).
 - ⚠️ **API 키는 백업에 넣지 않습니다.** 호스트·모델 이름만 넣습니다. 키는 직접 다시 입력하세요.
+- 백업에 들어 있는 연결 설정(host/model)은 **기본적으로 되돌리지 않습니다**. "연결 설정도 되돌리기"를
+  직접 켜야 적용되고, 그 경우에도 저장은 `checkHost`를 통과한 값만 반영되며(http 원격 호스트는
+  경고와 함께 표시) 지금의 API 키는 그대로 그 도메인으로 전송됩니다.
 - 저장 코드: `src/lib/backup.ts` (형식 검증 · 병합 규칙)
 
 ## 💾 브라우저에 저장되는 것 (서버 없음)
@@ -172,7 +182,11 @@ npm run test:watch # watch 모드
 | `enlearn.seen.v2` | 받은 문장 기록 (같은 문장 재출제 방지) | ⚙️ 연습 기록 → 레인별 지우기 |
 | `enlearn.kocache.v2` | 동화 문장의 AI 한국어 번역 (문장당 1회) | ⚙️ 한국어 번역 캐시 지우기 |
 | `enlearn.log.v1` | 연습 기록: 점수·내 답·교정 (최대 400건) | ⚙️ 연습 기록 지우기 |
-| `enlearn.srs.v1` | 간격반복 큐: 단계·다음 복습 날짜·놓친 횟수 | ⚙️ 복습 큐 비우기 |
+| `enlearn.srs.v1` | 간격반복 큐: 단계·다음 복습 날짜·놓친 횟수 (최대 500건, 낮은 단계부터 밀려남) | ⚙️ 복습 큐 비우기 |
+
+저장소 상한(`enlearn.seen.v2` 20,000 / `enlearn.kocache.v2` 4,000)을 두어 브라우저 용량(~5MB)을
+넘기지 않게 한다. 쓰기가 실패해도(QuotaExceededError) 화면은 멈추지 않고, 이전 값이 그대로
+남으며, 복습 탭과 백업 카드에 `⚠️ 브라우저 저장 공간이 가득 찼습니다` 안내가 뜬다.
 
 ## 📁 구조
 

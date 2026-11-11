@@ -27,7 +27,14 @@ export default function WeeklyChart({
           const isCurrent = today >= w.start && today <= w.end;
           const height = Math.round((w.count / max) * 100);
           return (
-            <li key={w.start} className="flex min-w-0 flex-1 flex-col items-center">
+            // title은 툴팁이라 키보드·스크린리더로 못 읽는다 → 같은 내용을
+            // focus 가능한 항목의 접근 가능한 이름으로 제공한다.
+            <li
+              key={w.start}
+              tabIndex={0}
+              aria-label={`${w.start} ~ ${w.end} · ${w.count}문장 · 평균 ${w.avgScore}점 · 교정 ${w.mistakes}개`}
+              className="flex min-w-0 flex-1 flex-col items-center outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
+            >
               <span className="mb-0.5 text-[10px] font-semibold text-slate-500">
                 {w.count > 0 ? w.count : ""}
               </span>

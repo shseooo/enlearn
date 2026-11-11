@@ -26,7 +26,10 @@ describe("앱 셸", () => {
       "tabindex",
       "-1",
     );
-    expect(screen.getByRole("tabpanel", { name: /자유 작성/ })).toBeInTheDocument();
+    const panel = screen.getByRole("tabpanel", { name: /자유 작성/ });
+    expect(panel).toBeInTheDocument();
+    // 키보드로 패널 안에 들어갈 수 있어야 한다
+    expect(panel).toHaveAttribute("tabindex", "0");
   });
 
   it("탭을 옮긴 뒤 돌아오면 입력한 문장이 남아있다", async () => {

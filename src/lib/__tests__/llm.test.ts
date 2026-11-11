@@ -653,3 +653,24 @@ describe("askFollowUp", () => {
     expect(content).toContain("새 질문");
   });
 });
+
+describe("sanitizeProviderBody —키·토큰 마스킹 (리뷰 3-10)", () => {
+  it("Azure식 hex 키와 JWT, Cookie 헤더를 가린다", () => {
+    const raw =
+      'Authentication failed. key=ab12cd34ef56ab12cd34ef56ab12cd34 ' +
+      'token: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.abcDEF123_456 ' +
+      "Set-Cookie: session=supersecretvalue; Path=/";
+    const out = sanitizeProviderBody(raw);
+    expect(out).toContain("[키마스킹]");
+    expect(out).toContain("[토큰마스킹]");
+    expect(out).not.toContain("ab12cd34ef56");
+    expect(out).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+    expect(out).not.toContain("supersecretvalue");
+  });
+
+  it("평범한 오류 메시지는 그대로 둔다", () => {
+    expect(sanitizeProviderBody("Rate limit exceeded")).toBe(
+      "Rate limit exceeded",
+    );
+  });
+});

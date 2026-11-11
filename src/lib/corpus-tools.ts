@@ -365,8 +365,8 @@ export function lemma(
   }
 
   if (vocab) {
-    const has = (c: string) =>
-      vocab instanceof Map ? vocab.has(c) : vocab.has(c);
+    // Map이든 Set이든 has가 같다 — 타입만 다른 두 갈래를 둘 필요는 없다
+    const has = (c: string) => vocab.has(c);
     for (const c of candidates) if (has(c)) return c;
     // 어떤 후보도 코퍼스에 없으면 억지로 줄이지 않고 표면형을 쓴다
     return w;

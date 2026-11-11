@@ -110,6 +110,8 @@ export default function Home() {
             id={`panel-${t.id}`}
             role="tabpanel"
             aria-labelledby={`tab-${t.id}`}
+            // role=tabpanel만 있으면 키보드로 패널에 들어갈 방법이 없다
+            tabIndex={0}
             hidden={tab !== t.id}
             className={tab === t.id ? "" : "hidden"}
           >

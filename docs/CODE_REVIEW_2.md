@@ -324,3 +324,46 @@ localStorage 예상 최대 ≈ 2.7MB / 한도 ~5MB
 ```
 
 > 재현에 쓴 임시 테스트(`zz-probe*`)는 리포트 작성 후 삭제했다. 위 출력은 그대로 회귀 테스트로 옮길 수 있다.
+
+---
+
+## 7. 처리 결과 (2차 리뷰 반영)
+
+판단은 전부 **코드를 직접 읽거나 재현**해서 정했다. 커밋마다 회귀 테스트를 함께 넣었고,
+"조치 없음"은 이유를 적었다. 검증 기준: `npx tsc --noEmit` · `npm run lint` · `npm test` · `npm run build`.
+
+| 항목 | 판단 | 조치 | 커밋 |
+| --- | --- | --- | --- |
+| 3-1 백업이 연결 설정을 무검증으로 덮어쓴다 | **타당** | `parseBackup`이 `checkHost`로 검증(실패시 settings 전부 폐기) + normalized `endpoint` 기록, `restoreBackup(file, replace, restoreSettings=false)` 기본값 off, 원격 `http`는 `hostWarning`으로 경고 UI | `de4ed54` |
+| 3-2 취소·출처 변경 후 코퍼스 받기 경합 | **타당** | `loadCorpus(lane, signal?)`(호출자 단위 취소·30초 타임아웃·공유 요청은 보호), 쓰기를 가드 뒤로 이동, 경합 가드를 `stale() || signal.aborted` 한 가지 규칙으로 통일, `cancel()` 후 `isCurrent()` false 계약 | `54cbe05` |
+| 3-3 추가 질문 히스토리 누수 | **부분 타당** | 카드를 재사용하면 실제로 새지만(카드 단위 재현 확인), **탭 경로에서는 재평가 중 `!loading` 때문에 카드가 언마운트돼 우연히 초기화**됐다 → 카드 자체에서 result 교체 시 히스토리 폐기, 늦게 도착한 답변 폐기, 호출부는 `key`로 명시적으로 재마운트 | `246c329` |
+| 3-4 백업 미리보기가 파일 값을 그대로 렌더 | **타당** | `countsOf(data)`로 개수를 항상 재계산(파일 값은 UI에 도달하지 않음) + `src/app/error.tsx` 바운더리 | `de4ed54` |
+| 3-5 "다른 문장"이 두 개만 순환 | **타당** | 큐 인덱스 순환으로 변경 (순환을 되돌리면 테스트가 실패하는 것까지 확인) | `75c5465` |
+| 3-6 `repairJson` 이스케이프 분기 죽음 | **타당** | 한 글자 비교로 수정 + JSON에서 무효한 이스케이프(`\{ \} \[ \'`) 정리. 이전 코드로 되돌리면 4건 실패 | `1645eb9` |
+| 3-7 빌드의 재시도 분류 | **타당** | `requestChatOnce`가 예외 대신 `{ok, retryable, retryAfterMs, message}` 반환, 400/401/404는 즉시 중단 + 안내 문구 | `1645eb9` |
+| 3-8 배치 번역 position 폴백 | **타당** | 식별자가 하나도 없는 **완전한 목록(개수 일치)**일 때만 자릿수 대응. 부분 응답의 번호 없는 항목은 폐기 | `75c5465` |
+| 3-9 저장소 상한·쓰기 실패·개수 불일치 | **타당** | `src/lib/storage.ts`(safeSetItem + 안내), 10개 쓰기 전부 래퍼 경유, `MAX_SRS 500`/`MAX_SEEN 20_000`/`MAX_KOREAN_CACHE 4_000` + 번역 값 길이 제한, 가져오기 반환값 = 저장 후 실제 개수, `storage-warning` UI | `946b09b` |
+| 3-10 version 하한 | **타당** | `version < 1`(0·음수·"0") 거부 | `de4ed54` |
+| 3-10 `handleTest` 취소 불가 | **타당** | `useCancellable` + 취소 버튼, 취소는 오류로 표시하지 않고 "테스트 중…"에서 탈출 | 예정 커밋 |
+| 3-10 `isSettingsComplete` host 미검증 | **타당** | `checkHost`로 검증. 검증 코드는 `src/lib/host.ts`로 분리(llm mock에 의존하지 않게 하고 llm은 재export) | 예정 커밋 |
+| 3-10 오류 본문 무제한 읽기 | **타당** | 두 지점 모두 500자로 제한(이미 `sanitizeProviderBody`가 300자로 정리하지만 메모리에 먼저 올리는 문제) | 예정 커밋 |
+| 3-10 `sanitizeProviderBody` 마스킹 구멍 | **타당** | Azure식 32자리 hex, JWT, `Set-Cookie` 추가 | 예정 커밋 |
+| 3-10 `anySignal` 리스너 정리 | **타당** | abort 시 리스너 해제. 추가로 **전체 대기 예산**(`LLM_TOTAL_BUDGET_MS` 240초) 도입 — 시도별 120초×3+백오프로 6분까지 늘어난 것을 막는다 | 예정 커밋 |
+| 3-10 AI 모드 기록 id가 모델 출력 기준 | **타당** | `PracticeInput.anchor` 추가, AI 문장은 화면의 한국어 기준 → 같은 문장 재연습 시 기록 중복 해소(수정 전 2건 → 후 1건) | 예정 커밋 |
+| 3-10 복습 탭의 렌더 중 localStorage 5회 파싱 | **타당** | `useMemo([snapshot])`로 묶음(스냅샷 참조는 저장소가 안 바뀌면 안정적) | 예정 커밋 |
+| 3-10 `koreanCacheCount` lane 없이 호출 | **부분 타당** | 화면 어디에서도 이 함수를 쓰지 않았다(리뷰의 지적이 의도한 경로 없음). lane 인자를 추가하고 "classic만 캐시하므로 우연히 일치"임을 주석으로 명시 | 예정 커밋 |
+| 3-10 `lemma`의 동일 분기 | **타당** | 분기 제거 | 예정 커밋 |
+| 3-10 `pickHints`의 seed 미사용 | **인정(방치)** | 회전 로직을 실제로 돌아가게 하려면 문장별 seed 전략이 필요하다. 힌트 품질에는 영향 없음 → 현상 유지, 주석으로 기록 | — |
+| 3-10 `hasVerb` 정규식이 약하다 | **인정(방치)** | 난이도 판정만 바꾸는 문제. 재생성 없이 손대면 코퍼스 등급이 흔들린다 → 현 코퍼스에서 재현되는 값으로 유지 | — |
+| 3-10 `entryKey` 32비트 해시 충돌 | **인정(허용)** | 4,400개 기준 ≈0.2%. 키는 로컬 캐시 key일 뿐이며 충돌 시 한 문장이 겹쳐 보이지 않는다 | — |
+| 3-10 죽은 export | **부분 타당** | `isSeen`·`getCachedCorpus`·`daysBetween`은 테스트/내부에서 실제로 쓰인다 → 제거 대신 용도를 주석으로 명시 | 예정 커밋 |
+| 3-10 a11y: tabpanel tabIndex | **타당** | `tabIndex={0}` 추가 + 테스트 | 예정 커밋 |
+| 3-10 a11y: 주간 그래프 툴팁 | **타당** | 주별 항목을 focus 가능하게 하고 같은 내용을 `aria-label`로 제공(그래프 전체 설명은 기존부터 `role="img"`) | 예정 커밋 |
+| 3-10 보안 헤더 | **부분 조치** | `nosniff`/`X-Frame-Options: DENY`/`Referrer-Policy`/`Permissions-Policy` 추가. **CSP는 넣지 않았다** — Next의 CSP는 nonce 중계가 필요하고, 정적 호스팅에서는 헤더 자체가 적용되지 않는다(CSP는 호스팅 환경에서 report-only로 시작하는 것이 맞다) | 예정 커밋 |
+| 3-10 CI에 `npm run build` 없음 | **타당 (자체 확인)** | CI는 클린 체크아웃에서 `typecheck`만 돌려 Next가 생성하는 `.next/types`(LayoutProps·routes.d.ts)가 없어 실패한다. build를 typecheck 앞으로 | 예정 커밋 |
+| 3-10 `.nvmrc`/`packageManager` | **부분 조치** | `.nvmrc`(24) 추가. `packageManager`는 넣지 않았다 — 이 환경의 `npm -v`가 1.3.14(Volta 심)라 corepack이 툴체인을 깨는 리스크가 있다 | 예정 커밋 |
+| 3-10 Dependabot/audit 게이트 | **미조치** | dev 의존성 moderate 7건은 개발 도구 문제. 자동 PR/게이트는 별도 정책 결정 | — |
+| 테스트 공백: scripts 0건 | **타당** | `main()`을 직접 실행 가드로 분리하고 `retryableStatus`/`requestChatOnce`/`balanceByDifficulty`를 export → `scripts/__tests__/build-corpus.test.mts` 9건, vitest include에 scripts 추가 | `1645eb9` |
+| 테스트 공백: json 이스케이프 | **타당** | `src/lib/__tests__/json.test.ts` 7건 | `1645eb9` |
+| 테스트 공백: translation-tab 지연 응답 / evaluation-card 히스토리 / review-tab 순환 / practice Quota·상한·반환값 / use-cancellable 계약 / weekly-chart | **타당** | 전부 추가(현재 23 파일 · 315개 테스트) | 각 커밋 |
+| 커버리지 측정 부재 | **미조치** | `@vitest/coverage-v8` 추가는 의존성 설치(네트워크)가 필요해 보류. 임의 threshold는 오히려 노이즈 | — |
