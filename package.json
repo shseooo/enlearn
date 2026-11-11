@@ -2,11 +2,16 @@
   "name": "enlearn",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=23.6.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run lint && npm test",
     "corpus": "node scripts/build-corpus.mts",
     "test": "vitest run",
     "test:watch": "vitest"
