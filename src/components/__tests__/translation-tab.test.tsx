@@ -195,6 +195,60 @@ describe("TranslationTab — 코퍼스 문장", () => {
     expect(await screen.findByText(/npm run corpus/)).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
+
+  it("출처를 바꾸면 이전 문장과 평가 카드가 함께 정리된다", async () => {
+    prefillCorpus("daily", dailyFile);
+    evaluateMock.mockResolvedValue({
+      score: 80,
+      feedback: "좋습니다.",
+      corrections: [],
+      betterExpression: "Tom looks sick.",
+    });
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await screen.findByText("톰은 많이 아파 보여.");
+    await user.type(screen.getByLabelText(/내 영어 번역/), "Tom looked sick.");
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+    await screen.findByText("Tom looks sick.");
+
+    await user.selectOptions(screen.getByLabelText(/문장 출처/), "ai");
+
+    // 이전 문장의 카드가 새 출처 라벨로 남아있으면 안 된다
+    expect(screen.queryByText("톰은 많이 아파 보여.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Tom looks sick.")).not.toBeInTheDocument();
+  });
+
+  it("문장 받기가 실패해도 이전 평가 카드가 남아있지 않는다", async () => {
+    prefillCorpus("daily", dailyFile);
+    evaluateMock.mockResolvedValue({
+      score: 80,
+      feedback: "좋습니다.",
+      corrections: [],
+      betterExpression: "Tom looks sick.",
+    });
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await screen.findByText("톰은 많이 아파 보여.");
+    await user.type(screen.getByLabelText(/내 영어 번역/), "Tom looked sick.");
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+    await screen.findByText("Tom looks sick.");
+
+    clearCorpusCache();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 404, statusText: "Not Found" }),
+    );
+    await user.click(screen.getByRole("button", { name: /다시 받기/ }));
+
+    expect(await screen.findByText(/npm run corpus/)).toBeInTheDocument();
+    expect(screen.queryByText("톰은 많이 아파 보여.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Tom looks sick.")).not.toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("TranslationTab — AI 생성 (기존 방식)", () => {

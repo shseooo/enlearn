@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   EvaluationContext,
   EvaluationResult,
@@ -14,12 +14,25 @@ import ScoreGauge, { scoreVerdict } from "./score-gauge";
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 언마운트 후에 setCopied가 호출되지 않도록 타이머를 정리한다
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
 
   async function handleCopy() {
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        setCopied(false);
+      }, 1500);
     } catch {
       // 클립보드 API가 차단된 환경에서는 무시
     }
@@ -104,7 +117,10 @@ export default function EvaluationCard({
           </h3>
           <ul className="space-y-2">
             {result.corrections.map((c, i) => (
-              <li key={i} className="rounded-lg bg-slate-50 p-3 text-sm">
+              <li
+                key={`${c.original}|${c.better}|${i}`}
+                className="rounded-lg bg-slate-50 p-3 text-sm"
+              >
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   {c.original && (
                     <span className="text-rose-600 line-through decoration-rose-300">
@@ -163,7 +179,7 @@ export default function EvaluationCard({
         {history.length > 0 && (
           <div className="mb-3 space-y-3">
             {history.map((f, i) => (
-              <div key={i} className="space-y-1 text-sm">
+              <div key={`${f.question}|${i}`} className="space-y-1 text-sm">
                 <p className="font-medium text-indigo-700">Q. {f.question}</p>
                 <p className="whitespace-pre-wrap leading-relaxed text-slate-700">
                   {f.answer}

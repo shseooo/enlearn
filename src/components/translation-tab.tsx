@@ -153,6 +153,18 @@ export default function TranslationTab({
     markSeen(key);
   }
 
+  /** 문장·평가 상태를 한 번에 정리한다. (입력 중인 영어 답안은 살린다) */
+  function clearSentence() {
+    setEntry(null);
+    setKorean("");
+    setHints([]);
+    setKoFromLlm(false);
+    setRecycled(false);
+    setResult(null);
+    setEvaluated(null);
+    setError(null);
+  }
+
   async function handleGetSentence() {
     // 진행 중인 평가가 있으면 결과를 버린다
     requestSeq.current += 1;
@@ -178,7 +190,9 @@ export default function TranslationTab({
       setAnswer("");
     } catch (e) {
       if (!isCurrent() || signal.aborted) return;
-      setKorean("");
+      // 실패하면 문장 상태를 완전히 비운다. entry/hints를 남기면
+      // 지난 문장의 평가 카드가 새 출처 라벨로 그대로 보인다. (사용자 입력은 살린다)
+      clearSentence();
       setPickError(
         e instanceof Error ? e.message : "문장을 가져오는 중 오류가 발생했습니다.",
       );
@@ -241,9 +255,14 @@ export default function TranslationTab({
           id="sentence-source"
           value={mode}
           onChange={(e) => {
+            // 출처를 바꾸면 진행 중인 요청 결과를 버리고 문장을 정리한다.
+            // (Tatoeba 원문이 AI 모드로 바뀐 뒤에도 "📖 참고 번역"으로 보였던 문제)
+            requestSeq.current += 1;
+            cancel();
             setMode(e.target.value as SourceMode);
             setBookId("all");
             setPickError(null);
+            clearSentence();
           }}
           className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
         >
