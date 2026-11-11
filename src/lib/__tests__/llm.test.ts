@@ -9,6 +9,7 @@ import {
   generateKoreanExercise,
   sanitizeProviderBody,
   testConnection,
+  translateSentenceToKorean,
 } from "../llm";
 import type { LLMSettings } from "../types";
 
@@ -548,6 +549,53 @@ describe("evaluateFreeWriting", () => {
     }
   });
 
+  it("코퍼스 원문(reference)을 주면 참고 원문 블록과 평가 규칙이 함께 간다 (리뷰 4-3)", async () => {
+    const m = mockFetchOk({
+      choices: [{ message: { content: '{"score": 80, "feedback": "좋아요."}' } }],
+    });
+    await evaluateTranslation(
+      settings,
+      "앨리스는 아주 지겨워지기 시작했다.",
+      "Alice begin to get tired.",
+      "Alice was beginning to get very tired of sitting by her sister on the bank.",
+    );
+    const [, init] = m.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as {
+      messages: { role: string; content: string }[];
+    };
+    const user = body.messages.find((msg) => msg.role === "user")?.content ?? "";
+
+    // 화면에 보이는 점수의 근거가 되는 블록이다 — 사고로 잘리면 아무도 모른다.
+    expect(user).toContain("실제 출판된 영어 원문 (참고용)");
+    expect(user).toContain("Alice was beginning to get very tired");
+    // 원문과 똑같이 고치라고 요구하지 않는 규칙이 그 뒤에 붙어야 한다
+    expect(user).toContain("평가 규칙");
+    expect(user).toContain("똑같이 고치라고 요구하지 마라");
+    expect(user.indexOf("평가 규칙")).toBeGreaterThan(
+      user.indexOf("실제 출판된 영어 원문"),
+    );
+  });
+
+  it("reference가 없으면 원문 블록과 평가 규칙을 보내지 않는다 (리뷰 4-3)", async () => {
+    const m = mockFetchOk({
+      choices: [{ message: { content: '{"score": 70, "feedback": "좋아요."}' } }],
+    });
+    await evaluateTranslation(settings, "배가 고파요.", "I am hungry.");
+    await evaluateTranslation(settings, "배가 고파요.", "I am hungry.", "   ");
+
+    for (const call of m.mock.calls) {
+      const body = JSON.parse((call[1] as RequestInit).body as string) as {
+        messages: { role: string; content: string }[];
+      };
+      const user = body.messages.find((msg) => msg.role === "user")?.content ?? "";
+      expect(user).not.toContain("실제 출판된 영어 원문");
+      expect(user).not.toContain("평가 규칙");
+      // 기본 형식(한국어 원문 + 사용자 답)은 그대로다
+      expect(user).toContain("원문 (한국어)");
+      expect(user).toContain("사용자의 영어 번역");
+    }
+  });
+
   it("답변 대신 추론만 돌아오면 그 독백을 피드백처럼 보여주지 않고 안내한다", async () => {
     mockFetchOk({
       choices: [
@@ -628,6 +676,62 @@ describe("generateKoreanExercise", () => {
       (msg: { role: string }) => msg.role === "user",
     ) as { content: string };
     expect(userMsg.content).toContain("자유");
+  });
+});
+
+describe("translateSentenceToKorean — 동화 문장의 첫 한국어 번역 (리뷰 4-3)", () => {
+  it("{sentence, hints} JSON을 요구해 같은 형태로 돌려준다", async () => {
+    const m = mockFetchOk({
+      choices: [
+        {
+          message: {
+            content:
+              '{"sentence": "앨리스는 자매 곁에 앉아 있기가 지겨워지기 시작했다.", "hints": ["begin", "tired"]}',
+          },
+        },
+      ],
+    });
+    const r = await translateSentenceToKorean(
+      settings,
+      "Alice was beginning to get very tired of sitting by her sister on the bank.",
+    );
+    // parseKoreanExercise가 기대하는 키 이름이 깨지면 여기에서 잡힌다
+    expect(r).toEqual({
+      sentence: "앨리스는 자매 곁에 앉아 있기가 지겨워지기 시작했다.",
+      hints: ["begin", "tired"],
+    });
+
+    const [, init] = m.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as {
+      messages: { role: string; content: string }[];
+      max_tokens: number;
+    };
+    const system = body.messages.find((msg) => msg.role === "system")?.content ?? "";
+    const user = body.messages.find((msg) => msg.role === "user")?.content ?? "";
+    // 번역만 시키고 창작시키지 않는 규칙 + 응답 스키마
+    expect(system).toContain('{"sentence"');
+    expect(system).toContain('"hints"');
+    expect(system).toContain("창작하지 마라");
+    expect(system).toContain("현대 한국어");
+    // 원문 문장이 그대로 요청에 들어간다
+    expect(user).toContain("Alice was beginning to get very tired");
+    expect(body.max_tokens).toBe(700);
+  });
+
+  it("코드펜스에 싸인 응답도 같은 결과로 파싱한다", async () => {
+    mockFetchOk({
+      choices: [
+        {
+          message: {
+            content:
+              '```json\n{"sentence": "바람이 버드나무 사이를 지나갔다.", "hints": ["wind"]}\n```',
+          },
+        },
+      ],
+    });
+    const r = await translateSentenceToKorean(settings, "The wind went through the willows.");
+    expect(r.sentence).toBe("바람이 버드나무 사이를 지나갔다.");
+    expect(r.hints).toEqual(["wind"]);
   });
 });
 

@@ -12,28 +12,76 @@
  * 두 번호를 구분해서 쓴다. 원고 각 줄 앞에 적는 번호는 **작업 행 번호**이고,
  * classics.json 배열 번호는 이미 번역된 문장이 섞일 때 앞으로 밀린다(감사·추적용).
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { CorpusFile } from "../src/lib/types.ts";
+
+import { writeAtomic } from "./lib/json-file.ts";
 
 const ROOT = process.cwd();
 const CACHE_DIR = join(ROOT, ".corpus-cache");
 const WORKLIST_FILE = join(CACHE_DIR, "worklist.tsv");
 const CORPUS_FILE = join(ROOT, "public", "data", "corpus", "classics.json");
 
-const corpus = JSON.parse(readFileSync(CORPUS_FILE, "utf8")) as CorpusFile;
-
-const rows = corpus.entries
-  .map((entry, entryIndex) => ({ entry, entryIndex }))
-  .filter(({ entry }) => !entry.ko)
-  .map(({ entry, entryIndex }, worklistRow) => `${worklistRow}\t${entryIndex}\t${entry.en}`);
-
-if (rows.length === 0) {
-  console.log("번역이 필요한 문장이 없습니다. 작업 목록은 그대로 둡니다.");
-  process.exit(0);
+/**
+ * 코퍼스를 읽는다. 크래시 말고 한국어 안내 + exit 1로 끝난다(audit와 같은 계약, R4-2).
+ * README가 사람에게 처음 실행하라고 안내하는 명령이 dump이므로, 여기서 스택 트레이스를
+ * 보여서는 안 된다.
+ */
+function readCorpus(): CorpusFile {
+  if (!existsSync(CORPUS_FILE)) {
+    console.error(
+      `코퍼스 파일을 찾을 수 없습니다: public/data/corpus/classics.json — ` +
+        `먼저 npm run corpus -- --lane=classic --offline 으로 코퍼스를 만드세요. (${CORPUS_FILE})`,
+    );
+    process.exit(1);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(CORPUS_FILE, "utf8"));
+  } catch (e) {
+    console.error(
+      `코퍼스 JSON을 해석할 수 없습니다: ${CORPUS_FILE} — ` +
+        `파일이 잘렸을 수 있습니다. npm run corpus -- --lane=classic --offline 으로 다시 만드세요. ` +
+        `(${e instanceof Error ? e.message : e})`,
+    );
+    process.exit(1);
+  }
+  // entries가 없는 파일(예: 빈 객체)은 아래 .map에서 TypeError로 터진다(R3-3과 같은 마무리 부족).
+  if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as CorpusFile).entries)) {
+    console.error(
+      `코퍼스 파일 형식이 올바르지 않습니다: ${CORPUS_FILE} — "entries" 배열이 필요합니다. ` +
+        `npm run corpus -- --lane=classic --offline 으로 다시 만드세요.`,
+    );
+    process.exit(1);
+  }
+  return parsed as CorpusFile;
 }
 
-mkdirSync(CACHE_DIR, { recursive: true });
-writeFileSync(WORKLIST_FILE, rows.join("\n") + "\n");
-console.log(`작업 목록 ${rows.length}문장 → .corpus-cache/worklist.tsv`);
+function main(): void {
+  const corpus = readCorpus();
+
+  const rows = corpus.entries
+    .map((entry, entryIndex) => ({ entry, entryIndex }))
+    .filter(({ entry }) => !entry.ko)
+    .map(({ entry, entryIndex }, worklistRow) => `${worklistRow}\t${entryIndex}\t${entry.en}`);
+
+  if (rows.length === 0) {
+    console.log("번역이 필요한 문장이 없습니다. 작업 목록은 그대로 둡니다.");
+    return;
+  }
+
+  mkdirSync(CACHE_DIR, { recursive: true });
+  // 제자리 덮어쓰기가 죽으면 잘린 작업 목록이 남고, 그 줄 번호로 원고가 쓰인다(R4-1).
+  writeAtomic(WORKLIST_FILE, rows.join("\n") + "\n");
+  console.log(`작업 목록 ${rows.length}문장 → .corpus-cache/worklist.tsv`);
+}
+
+try {
+  main();
+} catch (e) {
+  // 예상 밖 오류도 한 줄 안내로 끝낸다(R4-2).
+  console.error(`작업 목록을 만들지 못했습니다: ${e instanceof Error ? e.message : String(e)}`);
+  process.exit(1);
+}

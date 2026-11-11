@@ -42,3 +42,6 @@ next-env.d.ts
 
 # 코퍼스 원본 내려받기 캐시
 /.corpus-cache/
+
+# 원자적 쓰기가 중단되면 이름 바꾸기 전 임시 파일이 남을 수 있다(writeAtomic)
+public/data/corpus/*.tmp

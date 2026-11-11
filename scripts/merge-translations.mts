@@ -87,6 +87,23 @@ function parseArg(arg: string, worklistSize: number): { path: string; offset: nu
   return { path, offset };
 }
 
+/** 원고 파일을 읽는다. 경로 오타에서 스택 트레이스를 보여주지 않는다(R4-2). */
+function readManuscript(path: string): { rowNumber: number | null; ko: string }[] {
+  // check-translations.mts와 같은 문장: 사람은 "어떤 파일이 없는지" 먼저 알아야 한다.
+  if (!existsSync(path)) {
+    console.error(
+      `파일을 찾을 수 없습니다: ${path} — 원고 경로와 "#<시작 행>"을 확인하세요. ` +
+        `원고는 보통 .corpus-cache/ko/ 아래에 있습니다.`,
+    );
+    process.exit(1);
+  }
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map(parseManuscriptLine);
+}
+
 const rows = readWorklist();
 // 빌더와 같은 읽기 규칙: 손상된 캐시는 조용히 {}로 바꾸지 않고 멈춘다(R1-3).
 const cache: Record<string, CacheEntry> = readJsonCache<Record<string, CacheEntry>>(
@@ -99,13 +116,17 @@ let added = 0;
 let overwritten = 0;
 let skipped = 0;
 
-for (const arg of process.argv.slice(2)) {
+/**
+ * 원고 한 파일을 캐시에 합친다. 번호 어긋남은 그 자리에서 거부한다.
+ * (본문은 예전과 같고, 예상 밖 오류를 한 줄 안내로 끝내려고 함수로 묶었다 — 리뷰 4-2)
+ */
+function mergeOne(
+  arg: string,
+  rows: WorklistRow[],
+  cache: Record<string, CacheEntry>,
+): void {
   const { path, offset } = parseArg(arg, rows.length);
-  const manuscript = readFileSync(path, "utf8")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map(parseManuscriptLine);
+  const manuscript = readManuscript(path)
 
   // 줄에 적힌 번호가 작업 목록 위치와 같은지 확인한다.
   manuscript.forEach((line, i) => {
@@ -157,6 +178,14 @@ for (const arg of process.argv.slice(2)) {
   });
 
   console.log(`  ${path} +${manuscript.length}줄 (작업 목록 ${offset + 1}~${offset + manuscript.length})`);
+}
+
+try {
+  for (const arg of process.argv.slice(2)) mergeOne(arg, rows, cache);
+} catch (e) {
+  // 예상 밖 오류도 한 줄 안내로 끝낸다(R4-2).
+  console.error(`원고를 합치지 못했습니다: ${e instanceof Error ? e.message : String(e)}`);
+  process.exit(1);
 }
 
 // 임시 파일로 썼다가 이름을 바꾼다. 쓰는 도중에 멈추면 캐시 전체(JSON 한 장)가 깨진다.

@@ -62,9 +62,11 @@ function isCorpusEntry(value: unknown): value is CorpusEntry {
   if (typeof value !== "object" || value === null) return false;
   const e = value as Record<string, unknown>;
   if (typeof e.en !== "string" || !e.en.trim()) return false;
-  if (e.ko !== null && typeof e.ko !== "string") return false;
+  // ko/sourceId는 "값이 null일 수 있다"는 뜻이지 "키가 있어야 한다"는 뜻이 아니다.
+  // `!== null`로 보면 키가 빠진(undefined) 항목을 형식 오류로 걸어 파일 전체가 거부된다(R4-5).
+  if (e.ko != null && typeof e.ko !== "string") return false;
   if (typeof e.source !== "string") return false;
-  if (e.sourceId !== null && typeof e.sourceId !== "string") return false;
+  if (e.sourceId != null && typeof e.sourceId !== "string") return false;
   if (typeof e.lane !== "string" || !LANE_LABELS[e.lane as CorpusLane])
     return false;
   if (typeof e.difficulty !== "string" || !DIFFICULTIES.includes(e.difficulty))
@@ -204,11 +206,6 @@ export function markSeen(key: string): void {
   const seen = { ...loadSeen(), [key]: new Date().toISOString() };
   safeSetItem(SEEN_KEY, JSON.stringify(trimSeen(seen)));
   notifyProgressOnce();
-}
-
-/** 저장된 key 확인. (컴포넌트는 스냅샷을 쓰지만 이 판정은 테스트·internal에서도 쓴다) */
-export function isSeen(key: string): boolean {
-  return key in loadSeen();
 }
 
 /** lane을 주면 그 레인만, 생략하면 전체 기록을 지운다. */
@@ -522,12 +519,27 @@ export function exportKoreanCache(): Record<string, CachedKorean> {
  */
 const SEEN_DATE_PREFIX = /^\d{4}-\d{2}-\d{2}T/;
 const MAX_SEEN_DATE_CHARS = 40;
+/** 본 시각도 연습 기록과 같은 시대를 가리킨다(R4-4). 2000년보다 앞은 학습 기록이 아니다. */
+const MIN_SEEN_TIME = Date.parse("2000-01-01T00:00:00.000Z");
+/** 기기 시계가 하루 어긋난 경우는 그대로 둔다. 그 이상의 미래는 상한 트림을 깨뜨린다(R4-4). */
+const SEEN_FUTURE_TOLERANCE_MS = 86_400_000;
 
-/** 값이 문자열이 아니면 항목을 버린다. 형식 밖의 시각은 "방금 본 것"으로 바로잡는다. */
+/**
+ * 값이 문자열이 아니면 항목을 버린다. 형식 밖의 시각은 "방금 본 것"으로 바로잡는다.
+ * ⚠️ 미래 시각은 바로잡지 않고 항목을 버린다(R4-4): trimSeen은 값 내림차순으로 앞을
+ * 버리므로, "9999-…"을 지금 시각으로만 바꾸어도 그 항목이 꼭대기를 차지해
+ * 실제 최근 기록이 밀려난다. seen은 재출제를 막는 롤링 로그라 두 개를 버리는 편이
+ * 실제 기록 20,000개를 지키는 것보다 낫다.
+ */
 function normalizeSeenValue(value: unknown, nowIso: string): string | null {
   if (typeof value !== "string") return null;
-  if (SEEN_DATE_PREFIX.test(value) && value.length <= MAX_SEEN_DATE_CHARS) return value;
-  return nowIso;
+  if (!SEEN_DATE_PREFIX.test(value) || value.length > MAX_SEEN_DATE_CHARS) return nowIso;
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return nowIso;
+  if (time < MIN_SEEN_TIME || time > Date.parse(nowIso) + SEEN_FUTURE_TOLERANCE_MS) {
+    return null;
+  }
+  return value;
 }
 
 /** 받은 문장 기록을 합친다(기본) 또는 대체한다. 잘못된 항목은 걸러낸다. */

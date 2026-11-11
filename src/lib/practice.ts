@@ -51,11 +51,34 @@ export function addDays(date: string, days: number): string {
   return localDateString(d);
 }
 
-/** 두 로컬 날짜 사이의 일수 (b - a). 날짜 규칙을 검증하는 테스트에서도 쓴다. */
-export function daysBetween(a: string, b: string): number {
-  return Math.round(
-    (parseLocal(b).getTime() - parseLocal(a).getTime()) / 86_400_000,
+/**
+ * 저장소 상한(MAX_RECORDS/MAX_SEEN/MAX_SRS)을 넘기면 "날짜·시각 순으로 정렬해 앞쪽을
+ * 버린다". 상한 없는 미래 날짜는 항상 살아남아 실제 학습 기록을 잘라낸다(R4-4).
+ * 그래서 백업·저장소에서 읽는 날짜에 상한을 둔다.
+ *  - 하한: 2000년보다 앞은 이 앱의 학습 기록이 될 수 없다.
+ *  - 상한: 오늘보다 하루 이후부터는 거부한다(기기 시계가 하루 어긋난 경우는 산다).
+ *  - 이미 저장된 값은 버리지 않고 오늘로 바로잡는다(읽는 경로에서만 자른다).
+ */
+const MIN_RECORD_DATE = "2000-01-01";
+const IMPORT_DATE_TOLERANCE_DAYS = 1;
+
+/** 외부에서 들어온 날짜가 허용 범위인지 본다(R4-4). */
+function isStorableDate(date: string, today = localDateString()): boolean {
+  return (
+    /^\d{4}-\d{2}-\d{2}$/.test(date) &&
+    date >= MIN_RECORD_DATE &&
+    date <= addDays(today, IMPORT_DATE_TOLERANCE_DAYS)
   );
+}
+
+/** 이미 저장된 미래 날짜는 오늘로 끌어내린다. 값 자체는 버리지 않는다(R4-4). */
+function capStoredDate(date: string, today = localDateString()): string {
+  return date > today ? today : date;
+}
+
+/** 미래 시각도 정렬에서 앞줄을 차지하지 못한다(R4-4). */
+function capStoredTimestamp(ts: number, maxTs: number): number {
+  return ts > maxTs ? maxTs : ts;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +181,7 @@ function isLane(value: unknown): value is PracticeLane {
   );
 }
 
-function normalizeRecord(r: unknown): PracticeRecord | null {
+function normalizeRecord(r: unknown, today = localDateString()): PracticeRecord | null {
   if (typeof r !== "object" || r === null) return null;
   const v = r as Record<string, unknown>;
   if (typeof v.id !== "string" || !isLane(v.lane)) return null;
@@ -176,8 +199,8 @@ function normalizeRecord(r: unknown): PracticeRecord | null {
     : [];
   return {
     id: v.id,
-    date: typeof v.date === "string" ? v.date : "",
-    ts: typeof v.ts === "number" ? v.ts : 0,
+    date: typeof v.date === "string" ? capStoredDate(v.date, today) : "",
+    ts: typeof v.ts === "number" ? capStoredTimestamp(v.ts, Date.now()) : 0,
     lane: v.lane,
     en: clip(v.en),
     ko: typeof v.ko === "string" ? clip(v.ko) : null,
@@ -188,8 +211,9 @@ function normalizeRecord(r: unknown): PracticeRecord | null {
 }
 
 export function loadLog(): PracticeRecord[] {
+  const today = localDateString();
   return readArray<unknown>(LOG_KEY)
-    .map(normalizeRecord)
+    .map((r) => normalizeRecord(r, today))
     .filter((r): r is PracticeRecord => r !== null);
 }
 
@@ -668,10 +692,15 @@ export function weeklySeries(weeks = 8, now = new Date()): WeekBucket[] {
 function sanitizeRecord(value: unknown): PracticeRecord | null {
   if (typeof value !== "object" || value === null) return null;
   const o = value as Record<string, unknown>;
-  const date = typeof o.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(o.date) ? o.date : null;
+  const rawDate = typeof o.date === "string" ? o.date : "";
+  // 형식만 보고 통과시키면 미래 날짜가 상한 트림에서 실제 기록을 밀어낸다(R4-4).
+  // 백업 경계에서는 거부하고, importLog가 "실제로 남은 개수"를 알려주므로 사용자는 알아챈다.
+  if (!isStorableDate(rawDate)) return null;
+  // 하루 어긋난 시계는 살리되 저장에는 오늘로 적는다 — 저장에 미래 날짜를 남기지 않는다.
+  const date = capStoredDate(rawDate);
   const en = typeof o.en === "string" ? clip(o.en) : "";
   const lane = o.lane;
-  if (!date || !en) return null;
+  if (!en) return null;
   if (lane !== "daily" && lane !== "classic" && lane !== "ai" && lane !== "free") return null;
   const corrections = Array.isArray(o.corrections)
     ? o.corrections
@@ -688,11 +717,12 @@ function sanitizeRecord(value: unknown): PracticeRecord | null {
     : [];
   const scoreRaw = typeof o.score === "number" ? o.score : Number(o.score);
   const tsRaw = typeof o.ts === "number" ? o.ts : Number(o.ts);
+  const maxTs = Date.now() + IMPORT_DATE_TOLERANCE_DAYS * 86_400_000;
   return {
     id: typeof o.id === "string" && o.id ? o.id : practiceId(lane, en),
     lane,
     date,
-    ts: Number.isFinite(tsRaw) ? tsRaw : parseLocal(date).getTime(),
+    ts: Number.isFinite(tsRaw) ? capStoredTimestamp(tsRaw, maxTs) : parseLocal(date).getTime(),
     en,
     ko: typeof o.ko === "string" ? clip(o.ko) : null,
     answer: clip(typeof o.answer === "string" ? o.answer : ""),

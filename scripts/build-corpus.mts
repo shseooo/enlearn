@@ -11,7 +11,7 @@
  * 결과물은 public/data/corpus/{daily,classics}.json
  */
 import { inflateRawSync } from "node:zlib";
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
@@ -31,12 +31,13 @@ import {
   splitSentences,
   stripGutenbergBoilerplate,
   stripWikisourceMarkup,
+  hasGutenbergEndMarker,
 } from "../src/lib/corpus-tools.ts";
 import { parseTranslationBatch } from "../src/lib/parse-batch.ts";
 import { checkHost } from "../src/lib/host.ts";
 import { isRetryableStatus } from "../src/lib/http-status.ts";
 import { hasHangul } from "./lib/foreign-text.ts";
-import { readJsonCache, writeJsonAtomically } from "./lib/json-file.ts";
+import { readJsonCache, writeAtomic, writeJsonAtomically } from "./lib/json-file.ts";
 
 // ---------------------------------------------------------------------------
 // 목록
@@ -152,6 +153,9 @@ export async function fetchBytes(url: string, attempts = 3): Promise<Buffer> {
       });
       if (res.ok) return Buffer.from(await res.arrayBuffer());
       lastError = `HTTP ${res.status}`;
+      // 오류 본문도 소비한다. 본문을 읽지 않으면 undici가 그 연결을 "사용 중"으로
+      // 붙들고, 429/5xx가 이어지는 네트워크에서 시도마다 연결이 남는다(R4-6).
+      await res.body?.cancel().catch(() => {});
       // 404/403은 다시 시도해도 똑같이 실패한다 — LLM 쪽과 같은 판정을 쓴다(리뷰 3-11)
       retryable = isRetryableStatus(res.status);
     } catch (e) {
@@ -166,18 +170,42 @@ export async function fetchBytes(url: string, attempts = 3): Promise<Buffer> {
   throw new Error(`${url} 내려받기 실패: ${lastError}`);
 }
 
+/**
+ * 캐시된 원본이 "완성본"인지 확인한다(R4-1).
+ * `cachedBytes`는 예전에는 existsSync만 봤다. 쓰는 도중에 죽어 앞부분만 남은 파일을
+ * 완성본으로 쓰면, 꼬리 마커를 잃은책이 다음 빌드부터 앞부분만으로 조용히 참여한다.
+ */
+export function isCompleteGutenbergText(buf: Buffer): boolean {
+  return hasGutenbergEndMarker(decodeBytes(buf));
+}
+
 /** 원본은 캐시에 저장해 두므로 재실행 시 네트워크를 쓰지 않는다. */
-async function cachedBytes(name: string, urls: string[]): Promise<Buffer> {
+async function cachedBytes(
+  name: string,
+  urls: string[],
+  complete?: (buf: Buffer) => boolean,
+): Promise<Buffer> {
   mkdirSync(CACHE_DIR, { recursive: true });
   const path = join(CACHE_DIR, name);
-  if (existsSync(path)) return readFileSync(path);
+  if (existsSync(path)) {
+    const cached = readFileSync(path);
+    if (!complete || complete(cached)) return cached;
+    // 잘린 캐시를 버리고 다시 내려받는다 — "있으면 완성본"으로 취급하면 안 된다(R4-1).
+    console.log(`  ! 캐시된 ${name}이(가) 완성본이 아닙니다(끝 마커 없음) — 다시 내려받습니다`);
+    if (OFFLINE) {
+      throw new Error(
+        `캐시가 불완전합니다(--offline): ${name} — 끝 마커가 없다. 네트워크가 있을 때 다시 내려받으세요.`,
+      );
+    }
+  }
   if (OFFLINE) throw new Error(`캐시에 없음(--offline): ${name}`);
 
   let error: Error | null = null;
   for (const url of urls) {
     try {
       const buf = await fetchBytes(url);
-      writeFileSync(path, buf);
+      // 제자리 덮어쓰기는 잘린 파일을 남긴다. 그 파일이 "완성된 원본"으로 재사용된다(R4-1).
+      writeAtomic(path, buf);
       await sleep(1200); // 사이트 배려: 요청 사이에 쉬는 시간
       return buf;
     } catch (e) {
@@ -500,6 +528,10 @@ export async function requestChatOnce(
     });
     if (!res.ok) {
       const retryable = isRetryableStatus(res.status);
+      // 오류 본문도 소비한다(브라우저 쪽 src/lib/llm.ts와 같은 규칙, R4-6).
+      // 본문을 읽지 않고 버리면 undici가 그 연결을 "사용 중"으로 붙들고,
+      // 배치 140회를 도는 빌드에서 429/5xx마다 연결이 남는다.
+      await res.body?.cancel().catch(() => {});
       const hint =
         res.status === 401 || res.status === 403
           ? " — API 키를 확인하세요"
@@ -735,7 +767,11 @@ async function downloadAll(): Promise<void> {
       try {
         bytesQueue.books.set(
           book.id,
-          await cachedBytes(`pg${book.gutenberg}.txt`, pgUrls(book.gutenberg)),
+          await cachedBytes(
+            `pg${book.gutenberg}.txt`,
+            pgUrls(book.gutenberg),
+            isCompleteGutenbergText,
+          ),
         );
       } catch (e) {
         console.log(`  ✗ ${book.title}: ${e instanceof Error ? e.message : e}`);
@@ -967,7 +1003,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  for (const w of writes) writeFileSync(w.path, w.body);
+  // 두 파일 모두 tmp + rename로 쓴다. 두 번째 쓰기에서 죽어도 기존 두 파일은 그대로다(R4-1).
+  for (const w of writes) writeAtomic(w.path, w.body);
 
   console.log("\n코퍼스 빌드 완료");
   console.log(`  💬 일상 회화: ${dailyEntries.length}문장 — ${summarize(dailyEntries)}`);

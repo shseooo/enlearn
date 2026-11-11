@@ -4,7 +4,7 @@
  * 동작하는지 여기서 고정한다. 실제 저장소를 건드리지 않게 임시 디렉터리에서 돌린다.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -61,11 +61,18 @@ function runOk(root: string, script: string, args: string[] = []): string {
   return result.out;
 }
 
+/** 코퍼스 파일 하나 없는 빈 작업 공간 (README가 안내하는 첫 명령의 실패 경로) */
+function makeEmptyWorkspace(): string {
+  const root = mkdtempSync(join(tmpdir(), "enlearn-translation-empty-"));
+  mkdirSync(join(root, "public", "data", "corpus"), { recursive: true });
+  return root;
+}
+
 /** 만들고 지운 작업 공간을 추적한다 (실행마다 /tmp에 폴더를 남기지 않는다, 리뷰 1-15) */
 const workspaces: string[] = [];
 
-function makeTrackedWorkspace(): string {
-  const root = makeWorkspace();
+function makeTrackedWorkspace(factory: () => string = makeWorkspace): string {
+  const root = factory();
   workspaces.push(root);
   return root;
 }
@@ -119,6 +126,57 @@ describe("사전 번역 도구사슬", () => {
     const out = runOk(root, "dump-untranslated.mts");
     expect(out).toContain("작업 목록은 그대로 둡니다");
     expect(readFileSync(join(root, ".corpus-cache", "worklist.tsv"), "utf8")).toBe(before);
+  });
+
+  it("코퍼스 파일이 없으면 dump는 한국어 안내로 끝난다 — 스택 트레이스 아님 (리뷰 4-2)", () => {
+    const root = makeTrackedWorkspace(makeEmptyWorkspace);
+    const r = run(root, "dump-untranslated.mts");
+    expect(r.status).toBe(1);
+    expect(r.out).toContain("코퍼스 파일을 찾을 수 없습니다");
+    expect(r.out).toContain("npm run corpus");
+    expect(r.out).not.toMatch(/^\s+at /m);
+    expect(r.out).not.toContain("Node.js v");
+    expect(existsSync(join(root, ".corpus-cache", "worklist.tsv"))).toBe(false);
+  });
+
+  it("entries가 없는 코퍼스 파일도 dump는 안내로 거부한다 (리뷰 4-2)", () => {
+    const root = makeTrackedWorkspace(makeEmptyWorkspace);
+    writeFileSync(
+      join(root, "public", "data", "corpus", "classics.json"),
+      '{"lane":"classic","generatedAt":"x"}',
+    );
+    const r = run(root, "dump-untranslated.mts");
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('"entries" 배열이 필요합니다');
+    expect(r.out).not.toMatch(/TypeError/);
+    expect(r.out).not.toMatch(/^\s+at /m);
+  });
+
+  it("코퍼스 JSON이 잘려 있으면 해석 실패를 안내한다 (리뷰 4-2)", () => {
+    const root = makeTrackedWorkspace(makeEmptyWorkspace);
+    writeFileSync(join(root, "public", "data", "corpus", "classics.json"), '{"entries": [');
+    const r = run(root, "dump-untranslated.mts");
+    expect(r.status).toBe(1);
+    expect(r.out).toContain("코퍼스 JSON을 해석할 수 없습니다");
+    expect(r.out).not.toMatch(/^\s+at /m);
+  });
+
+  it("원고 경로 오타는 merge를 안내로 끝내고 캐시를 만들지 않는다 (리뷰 4-2)", () => {
+    const root = makeTrackedWorkspace();
+    runOk(root, "dump-untranslated.mts");
+    const r = run(root, "merge-translations.mts", ["missing.txt#0"]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain("파일을 찾을 수 없습니다: missing.txt");
+    expect(r.out).toContain(".corpus-cache/ko/");
+    expect(r.out).not.toMatch(/^\s+at /m);
+    expect(existsSync(join(root, ".corpus-cache", "translations.json"))).toBe(false);
+  });
+
+  it("작업 목록은 원자적으로 쓰인다 (리뷰 4-1)", () => {
+    const root = makeTrackedWorkspace();
+    runOk(root, "dump-untranslated.mts");
+    const files = readdirSync(join(root, ".corpus-cache")).filter((n) => n.endsWith(".tmp"));
+    expect(files).toEqual([]);
   });
 
   it("행 번호가 어긋난 원고는 파일 전체를 거부한다", () => {

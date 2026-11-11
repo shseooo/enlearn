@@ -75,6 +75,11 @@ export function words(text: string): string[] {
     .filter(Boolean);
 }
 
+/** Gutenberg 본문의 끝 마커가 있는지 본다 — 캐시된 원본이 끝까지 내려받았는지 확인한다(R4-1). */
+export function hasGutenbergEndMarker(text: string): boolean {
+  return PG_END.test(text);
+}
+
 /** Gutenberg 상여를 잘라내고 본문만 남긴다 */
 export function stripGutenbergBoilerplate(text: string): string {
   const start = text.split(PG_START);

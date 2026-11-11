@@ -13,7 +13,6 @@ import {
   getProgressSnapshot,
   importKoreanCache,
   importSeen,
-  isSeen,
   koreanCacheCount,
   loadCorpus,
   loadSeen,
@@ -97,6 +96,121 @@ describe("코퍼스 로딩", () => {
     vi.unstubAllGlobals();
   });
 
+  // 리뷰 4-9: 대부분의 화면·스토어 테스트는 prefillCorpus로 검증을 우회한다.
+  // 실제로 파일 한 장을 통과시키는 경로와, 필드별로 거부하는 기준을 여기서 고정한다.
+  const validRawEntry = () => ({
+    lane: "daily",
+    en: "I am hungry.",
+    ko: null,
+    hints: ["hungry"],
+    difficulty: "easy",
+    source: "Tatoeba",
+    sourceId: "1",
+  });
+
+  /** 항목을 하나 넣고 loadCorpus를 돌려, 통과하면 entries를 / 거부는 오류 문장을 돌려준다. */
+  async function loadWith(entryValue: unknown): Promise<{ ok: boolean; message: string }> {
+    clearCorpusCache();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          lane: "daily",
+          generatedAt: "x",
+          license: "CC-BY",
+          attribution: "Tatoeba",
+          sources: [],
+          entries: [entryValue],
+        }),
+      }),
+    );
+    try {
+      const loaded = await loadCorpus("daily");
+      return { ok: true, message: loaded.entries.map((e) => e.en).join(",") };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("파일 자체가 형식 밖이면 거부한다 — entries 배열·객체 검사 (리뷰 4-9)", async () => {
+    for (const bad of [null, [], "문자열", { lane: "daily" }, { lane: "daily", entries: {} }]) {
+      const result = await loadWithFile(bad);
+      expect(result.ok, JSON.stringify(bad)).toBe(false);
+      expect(result.message).toMatch(/형식이 올바르지/);
+    }
+  });
+
+  /** 파일 전체를 그대로 넣어 loadCorpus를 돌린다. */
+  async function loadWithFile(value: unknown): Promise<{ ok: boolean; message: string }> {
+    clearCorpusCache();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => value }));
+    try {
+      await loadCorpus("daily");
+      return { ok: true, message: "" };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("완전히 올바른 파일은 통과한다 (리뷰 4-9)", async () => {
+    const result = await loadWith(validRawEntry());
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe("I am hungry.");
+  });
+
+  it("ko·sourceId 키가 아예 없는 항목도 통과한다 — null과 같은 취급 (리뷰 4-5)", async () => {
+    // 두 필드는 "값이 null일 수 있다"는 뜻이지 "키가 있어야 한다"는 뜻이 아니다.
+    // 키 누락을 거부하면 손으로 고친 코퍼스 파일 전체가 "형식이 올바르지 않습니다"가 된다.
+    const withoutKeys = validRawEntry();
+    delete (withoutKeys as Record<string, unknown>).ko;
+    delete (withoutKeys as Record<string, unknown>).sourceId;
+    expect((await loadWith(withoutKeys)).ok).toBe(true);
+
+    // ko가 빠진 classic 항목은 화면에서 번역 캐시로 이어진다
+    clearCorpusCache();
+    const loaded = await (async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ lane: "classic", entries: [withoutKeys] }),
+        }),
+      );
+      try {
+        return await loadCorpus("classic");
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    })();
+    expect(resolveKorean(loaded.entries[0])).toBeNull();
+  });
+
+  it("필드별로 잘못된 항목은 표로 거부한다 (리뷰 4-9)", async () => {
+    const rejects: [string, Record<string, unknown>][] = [
+      ["en이 빈 문자열", { en: "   " }],
+      ["en이 문자열 아님", { en: 42 }],
+      ["ko가 문자열도 null도 아님", { ko: 42 }],
+      ["sourceId가 문자열도 null도 아님", { sourceId: 7 }],
+      ["source가 문자열 아님", { source: null }],
+      ["lane이 모르는 레인", { lane: "classicx" }],
+      ["lane이 없음", { lane: undefined }],
+      ["difficulty 오탈자", { difficulty: "ez" }],
+      ["hints가 배열 아님", { hints: "hungry" }],
+      ["hints에 빈 문자열", { hints: [""] }],
+      ["hints에 문자열 아닌 값", { hints: [42] }],
+    ];
+    for (const [label, override] of rejects) {
+      const result = await loadWith({ ...validRawEntry(), ...override });
+      expect(result.ok, label).toBe(false);
+      expect(result.message, label).toMatch(/형식이 올바르지/);
+    }
+  });
+
   it("필수 필드가 깨진 코퍼스는 조용히 폴백하지 않고 에러를 던진다", async () => {
     // lane/난이도/힌트가 없는 항목을 통과시키면 난이도 필터가 아무것도
     // 매칭하지 못해 재출제 폴백으로 조용히 빠진다.
@@ -166,7 +280,7 @@ describe("문장 고르기", () => {
     const first = pickEntry(pool, { difficulty: "easy", seed: 5 });
     expect(first?.entry.en).toBe("Easy one goes here.");
     markSeen(entryKey(first!.entry));
-    expect(isSeen(entryKey(first!.entry))).toBe(true);
+    expect(entryKey(first!.entry) in loadSeen()).toBe(true);
 
     // 쉬운 문장이 다 소진되면 난이도를 완화해 안 푼 문장을 고른다 (재출제 아님)
     const second = pickEntry(pool, { difficulty: "easy", seed: 5 });
@@ -179,6 +293,41 @@ describe("문장 고르기", () => {
     const picked = pickEntry(pool, { difficulty: "easy", seed: 2 });
     expect(picked?.entry.difficulty).toBe("easy");
     expect(picked?.recycled).toBe(true);
+  });
+
+  // 리뷰 4-9: 재출제 폴백의 순위 5(난이도 완화)와 7(둘 다 완화)가 0회였다.
+  // 어떤 순서로 완화하는지가 고정이 아니면, 재출제가 엉뚱한 출처/난이도로 빠져도 모른다.
+  it("다 푼 상태에서 순위 5(난이도 유지)가 순위 6(출처 유지)보다 앞선다 (리뷰 4-9)", () => {
+    const exhausted = file([
+      entry({ en: "Exhausted easy from a.", difficulty: "easy", sourceId: "a" }),
+      entry({ en: "Exhausted normal from a too.", difficulty: "normal", sourceId: "a" }),
+      entry({ en: "Exhausted hard from b only.", difficulty: "hard", sourceId: "b" }),
+    ]);
+    for (const e of exhausted.entries) markSeen(entryKey(e));
+
+    // 쉬운 문장(a)과 같은 출처의 어려운 문장(b)이 경쟁하면, 난이도를 지키러 a로 간다.
+    const picked = pickEntry(exhausted, { difficulty: "easy", sourceId: "b", seed: 2 });
+    expect(picked?.entry.en).toBe("Exhausted easy from a.");
+    expect(picked?.recycled).toBe(true);
+  });
+
+  it("난이도가 없으면 출처를 지키고, 둘 다 없으면 마지막 순위로 간다 (리뷰 4-9)", () => {
+    const only = file([
+      entry({ en: "Only easy from a here.", difficulty: "easy", sourceId: "a" }),
+      entry({ en: "Only hard from c here too.", difficulty: "hard", sourceId: "c" }),
+    ]);
+    for (const e of only.entries) markSeen(entryKey(e));
+
+    // 같은 난이도 후보가 없다 → 출처 a를 지킨다 (순위 6)
+    const bySource = pickEntry(only, { difficulty: "normal", sourceId: "a", seed: 1 });
+    expect(bySource?.entry.en).toBe("Only easy from a here.");
+
+    // 난이도도 출처도 아무 것과 맞지 않는다 → 순위 7
+    const lastResort = pickEntry(only, { difficulty: "normal", sourceId: "zzz", seed: 1 });
+    expect(lastResort?.recycled).toBe(true);
+    expect(["Only easy from a here.", "Only hard from c here too."]).toContain(
+      lastResort?.entry.en,
+    );
   });
 
   it("includeSeen이면 푼 문장도 후보에 넣는다", () => {
@@ -214,7 +363,7 @@ describe("푼 기록", () => {
     window.localStorage.setItem("enlearn.seen.v2", "{깨진 json");
     expect(seenCount()).toBe(0);
     markSeen("daily:x");
-    expect(isSeen("daily:x")).toBe(true);
+    expect("daily:x" in loadSeen()).toBe(true);
   });
 });
 
@@ -365,6 +514,49 @@ describe("코퍼스 요청 취소·타임아웃 (리뷰 3-2)", () => {
     vi.unstubAllGlobals();
   });
 
+  it("이미 취소된 신호로도 기다리던 요청에 붙지 않는다 — withAbort의 사전 거부 (리뷰 4-9)", async () => {
+    clearCorpusCache();
+    let resolve!: (res: Response) => void;
+    const promise = new Promise<Response>((r) => (resolve = r));
+    const spy = vi.fn(() => promise);
+    vi.stubGlobal("fetch", spy);
+
+    const inflight = loadCorpus("daily");
+    const controller = new AbortController();
+    controller.abort();
+    // 이미 취소된 신호는 진행 중 작업에 붙지도 않는다
+    await expect(loadCorpus("daily", controller.signal)).rejects.toThrow(/취소/);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    resolve(responseOf(file([entry({ en: "Still loading sentence here." })])));
+    expect((await inflight).entries).toHaveLength(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("연결 실패·JSON 해석 실패 안내 문장을 고정한다 (리뷰 4-9)", async () => {
+    clearCorpusCache();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))),
+    );
+    await expect(loadCorpus("daily")).rejects.toThrow(/코퍼스에 연결할 수 없습니다 \(\/data\/corpus\/daily\.json\)/);
+    vi.unstubAllGlobals();
+
+    clearCorpusCache();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError("Unexpected end of JSON input");
+        },
+      }),
+    );
+    await expect(loadCorpus("classic")).rejects.toThrow(/코퍼스 JSON을 해석할 수 없습니다 \(\/data\/corpus\/classics\.json\)/);
+    vi.unstubAllGlobals();
+  });
+
   it("이미 취소된 신호로는 요청을 시작하지 않는다", async () => {
     clearCorpusCache();
     const spy = vi.fn();
@@ -421,6 +613,43 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     expect(seenCount()).toBe(MAX_SEEN);
   });
 
+  // 리뷰 4-9: 개수만 보는 상한 테스트는 "누가 살아남는가"를 고정하지 못한다.
+  // 정렬 키가 어긋나도(예: 미래 날짜) 개수만 맞으면 통과했다.
+  it("seen 상한은 가장 오래 안 본 항목부터 버린다 (리뷰 4-9)", () => {
+    const bulk: Record<string, string> = {};
+    for (let i = 0; i < MAX_SEEN; i++) {
+      // 0번이 가장 오래 보고, 마지막이 가장 최근에 봤다.
+      const when = new Date(Date.UTC(2020, 0, 1) + i * 60_000).toISOString();
+      bulk[`classic:${i}:k`] = when;
+    }
+    importSeen(bulk, true);
+    expect(seenCount()).toBe(MAX_SEEN);
+
+    // 하나를 더 보면 가장 오래 안 본 0번이 밀려난다
+    importSeen({ "classic:new:k": new Date().toISOString() });
+    const seen = loadSeen();
+    expect(seen["classic:0:k"]).toBeUndefined();
+    expect(seen["classic:new:k"]).toBeTruthy();
+    // 남은 쪽은 최신순으로 유지된다 (가장 최근 항목은 살아 있다)
+    expect(seen[`classic:${MAX_SEEN - 1}:k`]).toBeTruthy();
+    expect(seenCount()).toBe(MAX_SEEN);
+  });
+
+  it("번역 캐시 상한은 JSON에 들어온 순서에서 앞쪽(오래된) 것부터 버린다 (리뷰 4-9)", () => {
+    const bulk: Record<string, { ko: string; hints: string[] }> = {};
+    for (let i = 0; i < MAX_KOREAN_CACHE; i++) {
+      bulk[`classic:${i}:order`] = { ko: `순서 확인 ${i}번 문장.`, hints: ["order"] };
+    }
+    importKoreanCache(bulk, true);
+    // 끝에 한 항목을 더 넣으면 앞쪽(가장 오래 들어온 0번)이 밀려난다
+    cacheKorean("classic:new:order", "마지막에 들어온 문장.", ["new"]);
+
+    expect(koreanCacheCount()).toBe(MAX_KOREAN_CACHE);
+    expect(getCachedKorean("classic:0:order")).toBeNull();
+    expect(getCachedKorean("classic:1:order")).not.toBeNull();
+    expect(getCachedKorean("classic:new:order")).not.toBeNull();
+  });
+
   // 리뷰 3-6: trimSeen은 "본 시각" 문자열 순으로 오래된 것부터 버린다.
   // 형식 밖의 값("asdf")이 섞이면 그 항목 뒤로 밀려, 살아가야 할 최근 문장이 먼저 버려진다.
   it("형식 밖의 본 날짜는 지금 시각으로 바로잡는다", () => {
@@ -459,6 +688,78 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     expect(seen["classic:newest:k"]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
+  // 리뷰 4-4: trimSeen은 값 내림차순으로 앞을 버린다. 미래 시각을 통과시키면
+  // 그 항목이 꼭대기를 차지하고 실제 최근 기록이 밀려난다.
+  it("미래 본 시각은 상한 잘림에서 이기지 않는다 (리뷰 4-4)", () => {
+    const recent = new Date(Date.now() - 86_400_000).toISOString();
+    const bulk: Record<string, string> = { "classic:newest:k": recent };
+    for (let i = 0; i < MAX_SEEN; i++) {
+      bulk[`classic:${i}:future`] = "2099-01-01T00:00:00.000Z";
+    }
+    const accepted = importSeen(bulk, true);
+
+    const seen = loadSeen();
+    // 미래 시각은 저장소에 들어오지 않는다
+    expect(accepted).toBe(1);
+    expect(seenCount()).toBe(1);
+    expect(seen["classic:0:future"]).toBeUndefined();
+    // 실제 최근 기록은 그대로 살아남는다
+    expect(seen["classic:newest:k"]).toBe(recent);
+  });
+
+  it("본 시각의 하한·하루 어긋난 시계 경계 (리뷰 4-4)", () => {
+    importSeen(
+      {
+        "classic:1:skew": new Date(Date.now() + 3_600_000).toISOString(),
+        "classic:2:far": "2099-01-01T00:00:00.000Z",
+        "classic:3:ancient": "1999-12-31T00:00:00.000Z",
+      },
+      true,
+    );
+    const seen = loadSeen();
+    // 시계가 하루 어긋난 정도는 그대로 둔다
+    expect(seen["classic:1:skew"]).toMatch(/^\d{4}-/);
+    // 그 이상의 미래와 2000년 이전은 항목을 버린다
+    expect(seen["classic:2:far"]).toBeUndefined();
+    expect(seen["classic:3:ancient"]).toBeUndefined();
+  });
+
+  // 리뷰 4-9: 백업 경로의 키 길이 가드와 번역 캐시 항목 검사가 0회였다.
+  it("백업 키 길이 가드와 번역 캐시 항목 검사 (리뷰 4-9)", () => {
+    const recent = new Date().toISOString();
+    importSeen(
+      {
+        "": recent,
+        ["k".repeat(81)]: recent,
+        "classic:ok:k": recent,
+      },
+      true,
+    );
+    const seen = loadSeen();
+    expect(Object.keys(seen)).toEqual(["classic:ok:k"]);
+
+    importKoreanCache(
+      {
+        "": { ko: "키가 빈 항목", hints: [] },
+        ["k".repeat(81)]: { ko: "키가 긴 항목", hints: [] },
+        "classic:bad:hints": { ko: "힌트가 배열 아님", hints: "배열 아닌 값" },
+        "classic:bad:ko": { ko: "   ", hints: [] },
+        "classic:ok:k": { ko: "올바른 항목", hints: ["ok"] },
+      },
+      true,
+    );
+    const rawKorean = window.localStorage.getItem("enlearn.kocache.v2") ?? "{}";
+    expect(Object.keys(JSON.parse(rawKorean))).toEqual(["classic:ok:k"]);
+  });
+
+  it("형식 밖의 본 시각(파싱 불가)은 지금 시각으로 바로잡는다 (리뷰 4-4)", () => {
+    importSeen({ "classic:nan:k": "9999-99-99T00:00:00.000Z", "classic:ok:k": "2024-05-05T00:00:00.000Z" }, true);
+    const seen = loadSeen();
+    // 접두만 보면 통과하는 "달력상 없는 날짜"도 지금 시각으로 바로잡힌다
+    expect(Number.isFinite(Date.parse(seen["classic:nan:k"]))).toBe(true);
+    expect(seen["classic:ok:k"]).toBe("2024-05-05T00:00:00.000Z");
+  });
+
   it("저장이 실패하면 다음 읽기도 저장소의 이전 값을 본다 (파싱 캐시)", () => {
     markSeen("daily:1:kept");
     const before = window.localStorage.getItem("enlearn.seen.v2");
@@ -471,7 +772,7 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
 
     // 메모리에 파싱 결과를 재사용해도, 실패한 변경이 화면에 보이지 않아야 한다
     expect(window.localStorage.getItem("enlearn.seen.v2")).toBe(before);
-    expect(isSeen("daily:2:phantom")).toBe(false);
+    expect("daily:2:phantom" in loadSeen()).toBe(false);
     expect(seenCount()).toBe(1);
   });
 
@@ -490,6 +791,6 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     vi.spyOn(Storage.prototype, "setItem").mockRestore();
 
     expect(seenCount()).toBe(before);
-    expect(isSeen("daily:9:zz")).toBe(false);
+    expect("daily:9:zz" in loadSeen()).toBe(false);
   });
 });

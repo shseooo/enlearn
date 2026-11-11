@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  useEffect,
   useMemo,
   useRef,
   useState,
@@ -104,29 +103,18 @@ export default function ReviewTab({
 
   // 서버 렌더에서는 Date를 읽는 계산을 하지 않는다 (Next 16이 불안정 값으로 잡는다).
   /**
-   * 자정을 넘긴 횟수. 자정에는 오늘/대기 큐가 바뀌는데 저장소는 그대로라서
-   * 스냅샷이 갱신되지 않는다. 앱이 탭으로 계속 열려 있는 학습 앱이라 타이머로
-   * 재계산한다(리뷰 1-13).
+   * 자정 재계산은 이 컴포넌트가 아니라 스냅샷이 책임진다(리뷰 1-13에서 만든
+   * 자체 타이머는 리뷰 2-9에서 스토어로 올라간 뒤에도 남아 자정에 두 번 렌더하게 했다, 리뷰 4-7).
+   * subscribeToPractice가 자정에 알림을 내고 getPracticeSnapshot이 로컬 날짜가
+   * 바뀌면 새 참조를 만들어 주므로, 아래 derived는 snapshot만 보고도 새로 돈다.
    */
-  const [dayTick, setDayTick] = useState(0);
-  useEffect(() => {
-    const now = new Date();
-    const midnight = new Date(now);
-    midnight.setHours(24, 0, 0, 0);
-    const timer = setTimeout(
-      () => setDayTick((n) => n + 1),
-      midnight.getTime() - now.getTime(),
-    );
-    return () => clearTimeout(timer);
-  }, [dayTick]);
-
-  // localStorage를 읽는 계산은 스냅샷이 바뀌거나 자정을 넘길 때만 한다.
+  // localStorage를 읽는 계산은 스냅샷이 바뀔 때만 한다.
   // 이 탭은 다른 탭에서 키를 입력할 때마다 다시 렌더되는데, 그때마다
   // 저장소를 몇 번씩 파싱하지 않는다(3-10).
   const derived = useMemo(() => {
     const has = snapshot.total > 0;
     // 저장소는 그대로여도 자정이 지나면 오늘/주간/대기 계산이 달라진다.
-    // 날짜로 판정하는 값은 스냅샷(snapshot)이 아니라 여기서 다시 계산한다(리뷰 1-13).
+    // 날짜로 판정하는 값은 스냅샷(snapshot)이 다시 계산하므로 여기서 따라간다(리뷰 2-9).
     const stats = has ? practiceStats() : null;
     const queue = snapshot.srs > 0 ? dueItems() : [];
     return {
@@ -139,10 +127,7 @@ export default function ReviewTab({
       nextDue:
         snapshot.srs > 0 && queue.length === 0 ? nextReviewDate() : null,
     };
-    // dayTick: 자정을 넘기면 오늘/대기 계산이 다시 돈다 (리뷰 1-13).
-    // dayTick은 계산에 쓰지 않고 "재계산 신호"로만 쓴다 → 규칙이 불필요하다고 본다.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshot, dayTick]);
+  }, [snapshot]);
   const { today, todayCount, streak, weeks, queue, due, nextDue } = derived;
   const current =
     (currentId ? queue.find((x) => x.id === currentId) : null) ??

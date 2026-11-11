@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -184,7 +184,48 @@ describe("fetchBytes", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 엔드포인트 정규화는 설정 화면과 같은 checkHost를 쓴다 (리뷰 3-12)
+// 오류 응답 본문을 소비한다 — 안 읽으면 연결이 "사용 중"으로 남는다 (리뷰 4-6)
+// ---------------------------------------------------------------------------
+
+describe("오류 응답 본문 처리 (리뷰 4-6)", () => {
+  /** undici처럼 보이는 응답: 본문 취소 여부를 센다. */
+  function errorResponse(status: number, statusText: string) {
+    const cancel = vi.fn(async () => {});
+    return {
+      ok: false,
+      status,
+      statusText,
+      headers: new Headers(),
+      body: { cancel },
+    };
+  }
+
+  it("fetchBytes는 실패 응답의 본문을 취소한다", async () => {
+    const response = errorResponse(404, "Not Found");
+    const fetchMock = vi.fn(async () => response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchBytes("https://gutenberg.example/pg11.txt")).rejects.toThrow(/HTTP 404/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // 본문을 읽지 않고 버리면 그 연결이 사용 중으로 남는다
+    expect(response.body.cancel).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("requestChatOnce도 브라우저 쪽과 같이 실패 본문을 소비한다", async () => {
+    const response = errorResponse(401, "Unauthorized");
+    vi.stubGlobal("fetch", vi.fn(async () => response));
+
+    const attempt = await requestChatOnce("https://h/v1/chat/completions", {}, {});
+    expect(attempt.ok).toBe(false);
+    expect(attempt.retryable).toBe(false);
+    expect(response.body.cancel).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 원본 캐시 완전성 — 잘린 원본을 "완성본"으로 재사용하지 않는다 (리뷰 4-1)
 // ---------------------------------------------------------------------------
 
 describe("chatEndpoint", () => {
@@ -332,6 +373,68 @@ describe("빌드 진입점 — 실패를 안내로 끝낸다 (리뷰 2-6)", () =
       expect(r.out).toContain("빌드를 멈춥니다");
       expect(r.out).not.toContain("코퍼스 빌드 완료");
       // 1,400문장이 들어 있는 유일한 추적 사본은 그대로다
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /** Gutenberg 형식의 원본 캐시 파일 하나를 만든다. withEndMarker=false는 쓰는 도중 죽은 복사다. */
+  function seedBookCache(root: string, id: number, count: number, withEndMarker: boolean, label = "alice"): void {
+    mkdirSync(join(root, ".corpus-cache"), { recursive: true });
+    const lines = Array.from(
+      { length: count },
+      (_, i) =>
+        `The ${label} number ${i} walked slowly down the long hall and looked at the garden.`,
+    );
+    writeFileSync(
+      join(root, ".corpus-cache", `pg${id}.txt`),
+      [
+        `*** START OF THE PROJECT GUTENBERG EBOOK ${id} ***`,
+        ...lines,
+        ...(withEndMarker ? [`*** END OF THE PROJECT GUTENBERG EBOOK ${id} ***`] : []),
+      ].join("\n"),
+    );
+  }
+
+  it("잘린 원본 캐시는 완성본으로 쓰지 않는다 — 다시 내려받으라고 하고 그 책의 문장을 싣지 않는다 (리뷰 4-1)", () => {
+    const root = mkdtempSync(join(tmpdir(), "enlearn-corpus-truncated-"));
+    try {
+      seedBookCache(root, 11, 60, false, "alice"); // 쓰는 도중 죽은 캐시: 꼬리 마커 없음
+      seedBookCache(root, 12, 60, true, "mirror"); // 정상 캐시
+      const path = seedHumanCorpus(root, 40);
+      const before = readFileSync(path, "utf8");
+
+      const r = build(["--lane=classic", "--offline"], root);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain("완성본이 아닙니다");
+      expect(r.out).toContain("내려받지 못한 책 13권");
+
+      const written = JSON.parse(readFileSync(path, "utf8")) as { entries: { en: string }[] };
+      // 앞부분만 남은 원본이 다음 빌드에 조용히 참여하면 안 된다
+      expect(written.entries.length).toBeGreaterThan(0);
+      expect(written.entries.every((e) => !e.en.includes("The alice number"))).toBe(true);
+      expect(before).toContain("사람이 옮긴 문장");
+      // tmp 잔여물이 코퍼스 자리에 남지 않는다
+      expect(
+        readdirSync(join(root, "public", "data", "corpus")).filter((n) => n.endsWith(".tmp")),
+      ).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--offline에서 잘린 캐시는 안내로 끝난다 (리뷰 4-1)", () => {
+    const root = mkdtempSync(join(tmpdir(), "enlearn-corpus-truncated-offline-"));
+    try {
+      seedBookCache(root, 11, 60, false);
+      const path = seedHumanCorpus(root, 40);
+      const before = readFileSync(path, "utf8");
+
+      const r = build(["--lane=classic", "--offline"], root);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain("캐시가 불완전합니다(--offline): pg11.txt");
+      expect(r.out).not.toMatch(/^\s+at /m);
       expect(readFileSync(path, "utf8")).toBe(before);
     } finally {
       rmSync(root, { recursive: true, force: true });
