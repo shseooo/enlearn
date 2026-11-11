@@ -33,6 +33,9 @@ LLM이 문장을 **창작**하면 한국어가 어색하고, 정답(영어)까�
 - **LLM을 쓰지 않으므로** API 설정이 없어도 동작하고 즉시 반응합니다.
 - **연습 현황**: 연속 연습일, 오늘/이번 주 문장 수, 평균 점수, 복습 대기 수,
   **자주 틀리는 표현 상위 5개**(`원문 → 고친 표현`, 횟수).
+- **주간 그래프**: 최근 8주 연습량(막대)과 평균 점수. 월요일 시작, 진행 중인 주를 진한 색으로.
+- **복습 채점(선택)**: 쓴 문장을 LLM으로 채점해 점수·피드백·교정을 보여줍니다. 취소 버튼도 있습니다.
+  복습 채점 점수는 연습 기록 평균에 합산되지 않습니다(연속일수·집계는 자기 평가만 셈).
 
 ### 4. ⚙️ 설정
 - **Host** (예: `https://api.openai.com/v1`), **Model**, **API Key**
@@ -88,8 +91,18 @@ npm run corpus -- --offline       # 내려받지 않고 캐시로 정제만
 npm run corpus -- --llm           # 동화 문장에 한국어 번역/힌트를 미리 입힘
 ```
 
-`--llm`에는 `ENLEARN_LLM_HOST`, `ENLEARN_LLM_MODEL`, `ENLEARN_LLM_API_KEY` 가 필요합니다.
-건너뛰면 앱이 첫 문장만 LLM으로 한국어 번역을 만들고 브라우저에 캐시합니다.
+`--llm`에는 `ENLEARN_LLM_HOST`, `ENLEARN_LLM_MODEL` 가 필요합니다(`ENLEARN_LLM_API_KEY`는 키 없는
+로컬 호스트라면 비워도 됩니다). 건너뛰면 앱이 첫 대면 LLM으로 한국어를 옮겨 브라우저에 캐시합니다.
+
+번역은 **배치로** 돕니다 — 한 요청에 10문장씩(기본), 동시 3개까지. 1,400문장이면 요청은 140개입니다.
+
+```bash
+npm run corpus -- --llm --batch=12 --concurrency=2   # 요청 단위·동시성 조절
+```
+
+- `.corpus-cache/translations.json`에 번역을 저장하므로 **중단해도 다시 실행하면 이어서** 합니다(같은 문장 재요청 없음).
+- 실제 파일에 들어갈 문장만 번역합니다(밸런싱 후). 후보 2,407개 중 수록은 1,400개라 요청이 그만큼 줄어듭니다.
+- 응답이 이상하면(번호 어긋남·환각 문장·한국어 아님) 그 항목은 버리고 다음으로 넘어갑니다. 파싱은 `src/lib/parse-batch.ts`.
 
 | 레인 | 출처 | 라이선스 | 기본 수록 |
 | --- | --- | --- | --- |
@@ -116,7 +129,7 @@ npm run check      # typecheck + lint + test 한 번에
 ## ✅ 테스트
 
 ```bash
-npm test           # vitest run (206개 테스트 / 14개 파일)
+npm test           # vitest run (248개 테스트 / 17개 파일)
 npm run test:watch # watch 모드
 ```
 
@@ -126,16 +139,30 @@ npm run test:watch # watch 모드
 - `src/lib/__tests__/llm.test.ts` — 요청/응답 처리, SSE·레거시·추론 폴백, Host 검증, 타임아웃/취소, 429·5xx 재시도, 시크릿 마스킹
 - `src/lib/__tests__/settings.test.ts` — localStorage 설정 로드/저장, 외부 스토어 스냅샷
 - `src/lib/__tests__/corpus-tools.test.ts` — 상여 제거, 약어·따옴표 고려 문장 분리(선형 시간), 연습 문장 필터, 백분위 난이도, lemma 힌트
-- `src/lib/__tests__/corpus.test.ts` — 코퍼스 검증, 4단계 문장 선택, 푼 기록/재출제, 번역 캐시 초기화, 일일 시드
+- `src/lib/__tests__/corpus.test.ts` — 코퍼스 검증, 4단계 문장 선택, 푼 기록/재출제, 번역 캐시 초기화, 일일 시드, 백업 병합
+- `src/lib/__tests__/practice.test.ts` — 연습 기록 상한/갱신, 연속 연습일, 이번 주 집계, 자주 틀린 표현, SRS 단계·복습 날짜, 주간 집계, 백업 복원 검증, 스냅샷 참조 안정성
+- `src/lib/__tests__/parse-batch.test.ts` — 배치 번역 응답 파싱(번호·원문 대조·환각 항목·성의 없는 번역)
+- `src/lib/__tests__/backup.test.ts` — 백업 생성(API 키 미포함), 파일 검증, 합치기/대체, 왕복
+- `src/components/__tests__/backup-card.test.tsx` — 내보내기, 가져오기 미리보기, 합치기/대체/취소, 오류
 - `src/components/__tests__/translation-tab.test.tsx` — 코퍼스 플로우, 경합·취소, 출처 변경 시 상태 정리
 - `src/components/__tests__/free-writing-tab.test.tsx` — 평가 플로우, 취소 버튼, 오류 표시
 - `src/components/__tests__/evaluation-card.test.tsx` — 결과 렌더링, 추가 질문 요청
 - `src/components/__tests__/settings-tab.test.tsx` — 저장 단일화, 외부 변경 동기화, Host 검증, 키 없는 호스트
 - `src/components/__tests__/progress-reset.test.tsx` — 연습 기록·번역 캐시·복습 큐 초기화
-- `src/lib/__tests__/practice.test.ts` — 연습 기록 상한/갱신, 연속 연습일, 이번 주 집계, 자주 틀린 표현, SRS 단계·복습 날짜, 스냅샷 참조 안정성
-- `src/components/__tests__/review-tab.test.tsx` — 복습 플로우(정답 보기·평점·다음 문장), 놓친 횟수, 현황 카드
+- `src/components/__tests__/review-tab.test.tsx` — 복습 플로우(정답 보기·평점·다음 문장), 놓친 횟수, 현황 카드, LLM 채점·취소·실패, 주간 그래프
 - `src/components/__tests__/score-gauge.test.tsx` — 점수 색상·평가 문구
 - `src/app/__tests__/page.test.tsx` — 탭 시맨틱(tablist/tab/tabpanel), 입력 유지, 출처 라이선스 표기
+
+## 🔄 백업 / 복구
+
+서버가 없어서 기록은 전부 브라우저에 있습니다. 브라우저가 초기화되거나 기기를 바꾸면
+연속 연습일·복습 큐가 사라지므로, ⚙️ 설정 탭의 **백업 · 복구**로 JSON 한 장으로 옮깁니다.
+
+- **내보내기**: `enlearn-backup-YYYY-MM-DD.json` (연습 기록 · 복습 큐 · 받은 문장 기록 · 번역 캐시)
+- **가져오기**: 파일을 고르면 내용을 미리 보여주고 **합치기** 또는 **대체**(확인 후)로 반영합니다.
+  형식이 다른 파일은 한국어 메시지로 거절하고, 오래된/먼저 모르는 항목은 조용히 건너뜁니다.
+- ⚠️ **API 키는 백업에 넣지 않습니다.** 호스트·모델 이름만 넣습니다. 키는 직접 다시 입력하세요.
+- 저장 코드: `src/lib/backup.ts` (형식 검증 · 병합 규칙)
 
 ## 💾 브라우저에 저장되는 것 (서버 없음)
 
@@ -158,7 +185,9 @@ src/
 ├── components/
 │   ├── free-writing-tab.tsx    # ✍️ 자유 작성
 │   ├── translation-tab.tsx     # 📝 번역 연습 (코퍼스 / AI 생성)
-│   ├── review-tab.tsx          # 📆 복습 (간격반복) + 연습 현황
+│   ├── review-tab.tsx          # 📆 복습 (간격반복) + 연습 현황 + LLM 채점
+│   ├── weekly-chart.tsx        # 주간 연습량 막대 그래프
+│   ├── backup-card.tsx         # ⚙️ 백업 내보내기 / 가져오기 (합치기·대체)
 │   ├── settings-tab.tsx        # ⚙️ 설정 + 연결 테스트 + 연습 기록 초기화
 │   ├── progress-reset.tsx      # 연습 기록·한국어 번역 캐시 표시/초기화
 │   ├── settings-warning.tsx    # LLM 설정 안내 배너 (탭 공통)
@@ -168,7 +197,10 @@ src/
 │   ├── llm.ts              # OpenAI 호환 API 클라이언트 + 프롬프트
 │   ├── corpus.ts           # 코퍼스 로딩/문장 선택/푼 기록/한국어 번역 캐시
 │   ├── corpus-tools.ts     # 원문 정제·문장 분리·난이도·힌트 (순수 함수)
-│   ├── practice.ts         # 연습 기록 · 연속일수/통계 · 간격반복(SRS) 큐
+│   ├── practice.ts         # 연습 기록 · 연속일수/통계 · 주간 집계 · 간격반복(SRS) 큐
+│   ├── backup.ts           # 연습 기록 백업/복원 (API 키는 담지 않는다)
+│   ├── json.ts             # LLM 응답에서 JSON 꺼내기(복원 포함)
+│   ├── parse-batch.ts      # 배치 번역 응답 파싱 (빌드 스크립트가 node로 사용)
 │   ├── parse.ts                # LLM 응답 방어적 JSON 파싱
 │   ├── settings.ts             # localStorage 설정 + 외부 스토어 구독
 │   ├── use-cancellable.ts      # 진행 중인 LLM 요청 취소/교차 방지 훅

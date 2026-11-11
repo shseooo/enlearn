@@ -125,7 +125,12 @@ export default function Home() {
                 onGoSettings={() => setTab("settings")}
               />
             )}
-            {t.id === "review" && <ReviewTab />}
+            {t.id === "review" && (
+              <ReviewTab
+                settings={settings}
+                onGoSettings={() => setTab("settings")}
+              />
+            )}
             {t.id === "settings" && (
               <SettingsTab settings={settings} onSaved={update} />
             )}

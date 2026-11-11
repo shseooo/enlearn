@@ -1,7 +1,25 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import ReviewTab from "../review-tab";
+
+const evaluateMock = vi.fn();
+
+vi.mock("@/lib/llm", () => ({
+  evaluateTranslation: (...args: unknown[]) => evaluateMock(...args),
+}));
+
+const SETTINGS = {
+  host: "https://api.example.com/v1",
+  model: "test-model",
+  apiKey: "sk-test",
+};
+
+function renderTab() {
+  render(
+    <ReviewTab settings={SETTINGS} onGoSettings={() => {}} />,
+  );
+}
 import {
   addDays,
   dueItems,
@@ -37,7 +55,7 @@ beforeEach(() => {
 
 describe("ReviewTab", () => {
   it("복습 대기 문장이 없으면 안내를 보여준다", () => {
-    render(<ReviewTab />);
+    renderTab();
     expect(screen.getByText("복습할 문장이 아직 없습니다")).toBeInTheDocument();
     expect(
       screen.getByText(/📝 번역 연습에서 문장을 풀면 하루 뒤에/),
@@ -50,7 +68,7 @@ describe("ReviewTab", () => {
       ko: "앨리스는 아주 지겨워지기 시작했습니다.",
       answer: "Alice begin to get very tired.",
     });
-    render(<ReviewTab />);
+    renderTab();
     const user = userEvent.setup();
 
     expect(
@@ -78,7 +96,7 @@ describe("ReviewTab", () => {
       ko: "토끼가 잽싸게 뛰어가 버렸습니다.",
       answer: "The rabbit hop away quick.",
     });
-    render(<ReviewTab />);
+    renderTab();
     const user = userEvent.setup();
 
     await screen.findByText("토끼가 잽싸게 뛰어가 버렸습니다.");
@@ -106,7 +124,7 @@ describe("ReviewTab", () => {
       ko: "복습할 두 번째 문장입니다.",
       answer: "Second sentence review today.",
     });
-    render(<ReviewTab />);
+    renderTab();
     const user = userEvent.setup();
 
     await screen.findByText("복습할 첫 문장입니다.");
@@ -135,7 +153,7 @@ describe("ReviewTab", () => {
       ko: "돌리기 테스트의 두 번째 문장.",
       answer: "beta answer",
     });
-    render(<ReviewTab />);
+    renderTab();
     const user = userEvent.setup();
 
     await screen.findByText("돌리기 테스트의 첫 문장.");
@@ -157,7 +175,7 @@ describe("ReviewTab", () => {
       ko: "같은 실수가 또 나온 문장.",
       answer: "He goed home early.",
     });
-    render(<ReviewTab />);
+    renderTab();
 
     expect(await screen.findByText(/복습 대기/)).toBeInTheDocument();
     expect(screen.getByText("2번")).toBeInTheDocument();
@@ -168,5 +186,142 @@ describe("ReviewTab", () => {
     expect(screen.getByText("2문장")).toBeInTheDocument();
     // 오늘 기록은 없다(어제만 연습함)
     expect(practiceId("classic", "A sentence with a repeated mistake.")).toBeTruthy();
+  });
+});
+
+describe("ReviewTab — LLM 채점", () => {
+  beforeEach(() => {
+    evaluateMock.mockReset();
+  });
+
+  it("설정이 덜 됐으면 채점 대신 설정 안내를 보여준다", () => {
+    practiceYesterday({
+      en: "A sentence needing settings.",
+      ko: "설정이 필요한 문장입니다.",
+      answer: "answer",
+    });
+    render(
+      <ReviewTab
+        settings={{ host: "", model: "", apiKey: "" }}
+        onGoSettings={() => {}}
+      />,
+    );
+    expect(screen.getByText("LLM 설정이 아직 완성되지 않았어요.")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /LLM 채점/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("쓴 문장을 LLM으로 채점하면 점수와 교정을 보여준다", async () => {
+    practiceYesterday({
+      en: "The rabbit hopped away quickly.",
+      ko: "토끼가 잽싸게 뛰어가 버렸습니다.",
+      answer: "old answer",
+    });
+    evaluateMock.mockResolvedValue({
+      score: 64,
+      feedback: "시제를 놓쳤어요.",
+      corrections: [
+        { original: "hop", better: "hopped", reason: "과거형이 필요합니다." },
+      ],
+      betterExpression: "The rabbit hopped away quickly.",
+    });
+    renderTab();
+    const user = userEvent.setup();
+
+    await screen.findByText("토끼가 잽싸게 뛰어가 버렸습니다.");
+    const box = screen.getByLabelText(/기억나는 대로 영어로 써보세요/);
+    expect(screen.getByRole("button", { name: /LLM 채점/ })).toBeDisabled();
+
+    await user.type(box, "The rabbit hop away quick.");
+    await user.click(screen.getByRole("button", { name: /LLM 채점/ }));
+
+    expect(await screen.findByText("64점")).toBeInTheDocument();
+    expect(screen.getByText("시제를 놓쳤어요.")).toBeInTheDocument();
+    expect(screen.getByText("hopped")).toBeInTheDocument();
+    expect(
+      await screen.findByText(/복습 채점 점수는 연습 기록 집계/),
+    ).toBeInTheDocument();
+
+    const args = evaluateMock.mock.calls[0];
+    expect(args[0]).toEqual(SETTINGS);
+    expect(args[1]).toBe("토끼가 잽싸게 뛰어가 버렸습니다.");
+    expect(args[2]).toBe("The rabbit hop away quick.");
+    expect(args[3]).toBe("The rabbit hopped away quickly.");
+    expect(args[4]).toHaveProperty("signal");
+  });
+
+  it("취소한 채점은 오류로 보여주지 않는다", async () => {
+    practiceYesterday({
+      en: "Another sentence to cancel on.",
+      ko: "취소할 문장입니다.",
+      answer: "answer",
+    });
+    evaluateMock.mockImplementation(
+      (_s: unknown, _k: string, _a: string, _r: unknown, opts?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener("abort", () => reject(new Error("abort")));
+        }),
+    );
+    renderTab();
+    const user = userEvent.setup();
+
+    await screen.findByText("취소할 문장입니다.");
+    await user.type(screen.getByLabelText(/기억나는 대로/), "Some attempt here.");
+    await user.click(screen.getByRole("button", { name: /LLM 채점/ }));
+    await screen.findByText("채점 중…");
+    await user.click(screen.getByRole("button", { name: /취소/ }));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("취소할 문장입니다.")).toBeInTheDocument();
+  });
+
+  it("채점 실패는 오류 메시지로 알려준다", async () => {
+    practiceYesterday({
+      en: "A sentence that will fail scoring.",
+      ko: "채점 실패 문장입니다.",
+      answer: "answer",
+    });
+    evaluateMock.mockRejectedValue(new Error("호스트에 연결할 수 없습니다."));
+    renderTab();
+    const user = userEvent.setup();
+
+    await screen.findByText("채점 실패 문장입니다.");
+    await user.type(screen.getByLabelText(/기억나는 대로/), "An attempt to score.");
+    await user.click(screen.getByRole("button", { name: /LLM 채점/ }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "호스트에 연결할 수 없습니다.",
+    );
+  });
+});
+
+describe("ReviewTab — 주간 그래프", () => {
+  it("기록이 있으면 최근 8주 막대와 평균 점수를 보여준다", async () => {
+    practiceYesterday({
+      en: "A sentence for the weekly chart.",
+      ko: "주간 그래프용 문장.",
+      answer: "chart answer",
+    });
+    logPractice({
+      lane: "classic",
+      en: "An older sentence for the chart too.",
+      ko: "지난 주 그래프용 문장.",
+      answer: "older answer",
+      score: 90,
+      corrections: [],
+      now: day(-9),
+    });
+    renderTab();
+
+    expect(await screen.findByText("주간 연습량")).toBeInTheDocument();
+    const chart = screen.getByRole("img");
+    expect(chart.getAttribute("aria-label")).toMatch(/주 .*문장/);
+    expect(screen.getAllByText("90점").length).toBeGreaterThan(0);
+  });
+
+  it("기록이 없으면 그래프를 그리지 않는다", () => {
+    renderTab();
+    expect(screen.queryByText("주간 연습량")).not.toBeInTheDocument();
   });
 });

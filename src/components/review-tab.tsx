@@ -2,16 +2,25 @@
 
 import { useState, useSyncExternalStore } from "react";
 import {
+  LANE_SHORT_LABELS,
   REVIEW_INTERVALS,
   dueItems,
   getPracticeServerSnapshot,
   getPracticeSnapshot,
   gradeReview,
   lastAnswerFor,
+  localToday,
+  nextReviewDate,
   subscribeToPractice,
+  weeklySeries,
   type ReviewGrade,
 } from "@/lib/practice";
-import { LANE_SHORT_LABELS, nextReviewDate } from "@/lib/practice";
+import { evaluateTranslation } from "@/lib/llm";
+import { isSettingsComplete } from "@/lib/settings";
+import { useCancellable } from "@/lib/use-cancellable";
+import type { EvaluationResult, LLMSettings } from "@/lib/types";
+import SettingsWarning from "./settings-warning";
+import WeeklyChart from "./weekly-chart";
 
 const GRADES: { id: ReviewGrade; label: string; className: string }[] = [
   {
@@ -31,7 +40,15 @@ const GRADES: { id: ReviewGrade; label: string; className: string }[] = [
   },
 ];
 
-function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Metric({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
   return (
     <div className="rounded-xl bg-slate-50 p-3 text-center">
       <p className="text-lg font-bold text-slate-800">{value}</p>
@@ -44,9 +61,15 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
 /**
  * 📆 복습 탭.
  * 푼 문장을 1/3/7/21/45일 뒤에 다시 내고, 자기 평가로 다음 복습 시점을 정한다.
- * LLM을 쓰지하므로 설정이 없어도 동작하고 즉시 결과가 나온다.
+ * 원하면 LLM으로 쓴 문장을 채점받을 수도 있다(기본 흐름은 LLM 없이 동작한다).
  */
-export default function ReviewTab() {
+export default function ReviewTab({
+  settings,
+  onGoSettings,
+}: {
+  settings: LLMSettings;
+  onGoSettings: () => void;
+}) {
   const snapshot = useSyncExternalStore(
     subscribeToPractice,
     getPracticeSnapshot,
@@ -58,9 +81,23 @@ export default function ReviewTab() {
   const [answer, setAnswer] = useState("");
   const [revealed, setRevealed] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  // 채점 결과는 "어떤 문장의 결과인지" 함께 저장한다. 문장이 바뀌면 저절로 사라진다.
+  const [score, setScore] = useState<{
+    id: string;
+    result: EvaluationResult;
+  } | null>(null);
+  const [scoreError, setScoreError] = useState<{
+    id: string;
+    text: string;
+  } | null>(null);
+  const [scoringId, setScoringId] = useState<string | null>(null);
+  const { begin, cancel } = useCancellable();
 
-  // 서버에서는 스냅샷이 0이므로 Date를 만드는 함수를 부르지 않는다.
+  // 서버 렌더에서는 스냅샷이 0이므로 Date를 만드는 함수를 부르지 않는다.
   // (Next 16은 Client Component 렌더 중 new Date()를 불안정 값으로 잡아 prerender를 실패시킨다)
+  const hasData = snapshot.total > 0;
+  const today = hasData ? localToday() : "";
+  const weeks = hasData ? weeklySeries(8) : [];
   const queue = snapshot.due > 0 ? dueItems() : [];
   const nextDue =
     snapshot.srs > 0 && snapshot.due === 0 ? nextReviewDate() : null;
@@ -90,7 +127,37 @@ export default function ReviewTab() {
     loadNext(current.id);
   }
 
+  async function handleScore() {
+    if (!current || !answer.trim()) return;
+    const id = current.id;
+    const { signal, isCurrent } = begin();
+    setScoringId(id);
+    setScore(null);
+    setScoreError(null);
+    try {
+      const result = await evaluateTranslation(
+        settings,
+        current.ko,
+        answer.trim(),
+        current.en,
+        { signal },
+      );
+      if (!isCurrent() || signal.aborted) return;
+      setScore({ id, result });
+    } catch (e) {
+      // 취소는 오류가 아니다 (직전 호출을 끊으면 abort가 터진다)
+      if (!isCurrent() || signal.aborted) return;
+      setScoreError({
+        id,
+        text: e instanceof Error ? e.message : "채점에 실패했습니다.",
+      });
+    } finally {
+      if (isCurrent()) setScoringId(null);
+    }
+  }
+
   const previousAnswer = current ? lastAnswerFor(current.id) : null;
+  const settingsOk = isSettingsComplete(settings);
 
   return (
     <div className="space-y-4">
@@ -102,7 +169,9 @@ export default function ReviewTab() {
           <Metric
             label="연속 연습"
             value={`${snapshot.streak}일`}
-            hint={snapshot.streak > 0 ? "오늘도 풀면 이어집니다" : "오늘 시작해 보세요"}
+            hint={
+              snapshot.streak > 0 ? "오늘도 풀면 이어집니다" : "오늘 시작해 보세요"
+            }
           />
           <Metric label="오늘" value={`${snapshot.today}문장`} />
           <Metric label="이번 주" value={`${snapshot.week}문장`} />
@@ -113,6 +182,14 @@ export default function ReviewTab() {
           <strong className="font-semibold text-slate-700">{snapshot.due}</strong>개
           · 복습 큐 {snapshot.srs}개
         </p>
+        {weeks.length > 0 && (
+          <div className="mt-4 border-t border-slate-100 pt-4">
+            <h3 className="mb-2 text-sm font-semibold text-slate-700">
+              주간 연습량
+            </h3>
+            <WeeklyChart weeks={weeks} today={today} />
+          </div>
+        )}
       </div>
 
       {current ? (
@@ -153,6 +230,91 @@ export default function ReviewTab() {
             className="w-full resize-y rounded-xl border border-slate-300 p-3 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
           />
 
+          <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+            {!settingsOk ? (
+              <SettingsWarning onGoSettings={onGoSettings} />
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleScore()}
+                disabled={!answer.trim() || scoringId === current.id}
+                className="rounded-xl border border-indigo-200 bg-white px-4 py-2 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {scoringId === current.id ? "채점 중…" : "🎯 LLM 채점"}
+              </button>
+            )}
+            {scoringId === current.id && (
+              <button
+                type="button"
+                onClick={cancel}
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
+              >
+                취소
+              </button>
+            )}
+            {!revealed && (
+              <button
+                type="button"
+                onClick={() => setRevealed(true)}
+                className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700"
+              >
+                정답 보기
+              </button>
+            )}
+          </div>
+
+          {scoreError && scoreError.id === current.id && (
+            <p role="alert" className="mt-2 text-xs text-rose-600">
+              {scoreError.text}
+            </p>
+          )}
+
+          {score && score.id === current.id && (
+            <div className="mt-3 rounded-xl border border-slate-200 p-3">
+              <p className="mb-2 text-sm font-semibold text-slate-700">
+                🎯 채점 결과{" "}
+                <span className="ml-1 text-base font-bold text-indigo-600">
+                  {score.result.score}점
+                </span>
+              </p>
+              <p className="text-sm leading-relaxed text-slate-600">
+                {score.result.feedback}
+              </p>
+              {score.result.corrections.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {score.result.corrections.map((c, i) => (
+                    <li
+                      key={`${c.original}-${i}`}
+                      className="rounded-lg bg-slate-50 p-2 text-xs"
+                    >
+                      <span className="text-rose-600 line-through decoration-rose-300">
+                        {c.original}
+                      </span>
+                      <span className="mx-2 text-slate-400">→</span>
+                      <span className="font-semibold text-emerald-700">
+                        {c.better}
+                      </span>
+                      {c.reason && (
+                        <span className="ml-2 text-slate-500">{c.reason}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {score.result.betterExpression && (
+                <p className="mt-2 text-xs text-slate-500">
+                  ✨ 더 좋은 표현:{" "}
+                  <span className="font-medium text-slate-700">
+                    {score.result.betterExpression}
+                  </span>
+                </p>
+              )}
+              <p className="mt-2 text-[11px] text-slate-400">
+                복습 채점 점수는 연습 기록 집계(평균 점수)에 합산되지 않습니다.
+              </p>
+            </div>
+          )}
+
           {revealed ? (
             <div className="mt-3 space-y-2">
               <div>
@@ -182,17 +344,10 @@ export default function ReviewTab() {
               </div>
             </div>
           ) : (
-            <div className="mt-3 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setRevealed(true)}
-                className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700"
-              >
-                정답 보기
-              </button>
+            <div className="mt-1 text-xs text-slate-400">
+              다 썼으면 정답을 보고 비교한 뒤, 아래 세 단추로 스스로 평가하세요.
             </div>
           )}
-
         </div>
       ) : (
         <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
@@ -216,7 +371,10 @@ export default function ReviewTab() {
           </h3>
           <ul className="space-y-2">
             {snapshot.topMistakes.map((m, i) => (
-              <li key={`${m.original}-${i}`} className="rounded-lg bg-slate-50 p-3 text-sm">
+              <li
+                key={`${m.original}-${i}`}
+                className="rounded-lg bg-slate-50 p-3 text-sm"
+              >
                 <span className="text-rose-600 line-through decoration-rose-300">
                   {m.original}
                 </span>

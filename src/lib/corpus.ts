@@ -405,3 +405,65 @@ export function resolveKorean(entry: CorpusEntry): string | null {
   if (entry.ko && entry.ko.trim()) return entry.ko.trim();
   return getCachedKorean(entryKey(entry))?.ko ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// 백업 / 복원 (다른 기기·브라우저로 연습 기록 옮기기)
+// ---------------------------------------------------------------------------
+
+export function exportSeen(): SeenMap {
+  return loadSeen();
+}
+
+export function exportKoreanCache(): Record<string, CachedKorean> {
+  return readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
+}
+
+/** 받은 문장 기록을 합친다(기본) 또는 대체한다. 잘못된 항목은 걸러낸다. */
+export function importSeen(value: unknown, replace = false): number {
+  if (typeof window === "undefined") return 0;
+  const incoming = normalizeRecord(value, (k, v) =>
+    k.length > 0 && k.length <= 80 && typeof v === "string",
+  );
+  if (replace) {
+    window.localStorage.setItem(SEEN_KEY, JSON.stringify(incoming));
+    notifyProgress();
+    return Object.keys(incoming).length;
+  }
+  const merged = { ...loadSeen(), ...incoming };
+  window.localStorage.setItem(SEEN_KEY, JSON.stringify(merged));
+  notifyProgress();
+  return Object.keys(incoming).length;
+}
+
+/** 한국어 번역 캐시를 합친다(기본) 또는 대체한다. */
+export function importKoreanCache(value: unknown, replace = false): number {
+  if (typeof window === "undefined") return 0;
+  const incoming = normalizeRecord(value, (k, v) => {
+    if (k.length === 0 || k.length > 80) return false;
+    if (typeof v !== "object" || v === null) return false;
+    const o = v as Record<string, unknown>;
+    return typeof o.ko === "string" && o.ko.length > 0 && Array.isArray(o.hints);
+  });
+  if (replace) {
+    window.localStorage.setItem(KO_CACHE_KEY, JSON.stringify(incoming));
+    notifyProgress();
+    return Object.keys(incoming).length;
+  }
+  // 기존 캐시를 우선한다 (화면에 보여 이미 검증된 번역을 덮어쓰지 않는다)
+  const merged = { ...incoming, ...exportKoreanCache() };
+  window.localStorage.setItem(KO_CACHE_KEY, JSON.stringify(merged));
+  notifyProgress();
+  return Object.keys(incoming).length;
+}
+
+function normalizeRecord(
+  value: unknown,
+  accept: (key: string, value: unknown) => boolean,
+): Record<string, never> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof k === "string" && accept(k, v)) out[k] = v;
+  }
+  return out as Record<string, never>;
+}

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { LLMSettings } from "@/lib/types";
 import { checkHost, testConnection } from "@/lib/llm";
+import BackupCard from "./backup-card";
 import ProgressReset from "./progress-reset";
 
 interface SettingsTabProps {
@@ -216,6 +217,10 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
       </div>
 
       <ProgressReset />
+
+      <div className="mt-6">
+        <BackupCard />
+      </div>
     </div>
   );
 }
