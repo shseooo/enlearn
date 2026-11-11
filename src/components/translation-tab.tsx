@@ -24,6 +24,7 @@ import {
 } from "@/lib/corpus";
 import { entryKey, DIFFICULTY_SHORT } from "@/lib/corpus-tools";
 import { isSettingsComplete } from "@/lib/settings";
+import { useCancellable } from "@/lib/use-cancellable";
 import EvaluationCard from "./evaluation-card";
 import { SettingsWarning } from "./free-writing-tab";
 
@@ -80,6 +81,7 @@ export default function TranslationTab({
    * (문장을 먼저 바꾼 뒤 이전 평가 응답이 늦게 도착하면 다른 문장 위에 덮어써진다)
    */
   const requestSeq = useRef(0);
+  const { begin, cancel } = useCancellable();
 
   // 책 드롭다운에 제목을 채우기 위해 코퍼스 목록을 미리 읽어둔다.
   useEffect(() => {
@@ -107,7 +109,7 @@ export default function TranslationTab({
     !loading;
 
   /** 코퍼스에서 아직 안 풀어본 문장을 하나 꺼낸다. (동화는 첫 한국어만 LLM 번역) */
-  async function handlePickFromCorpus(lane: CorpusLane) {
+  async function handlePickFromCorpus(lane: CorpusLane, signal: AbortSignal) {
     const file = await loadCorpus(lane);
     const picked = pickEntry(file, {
       difficulty,
@@ -131,7 +133,9 @@ export default function TranslationTab({
           "동화 문장은 첫 한국어 번역에 LLM이 필요합니다. ⚙️ 설정에서 host/model/apiKey를 입력하세요.",
         );
       }
-      const translated = await translateSentenceToKorean(settings, item.en);
+      const translated = await translateSentenceToKorean(settings, item.en, {
+        signal,
+      });
       ko = translated.sentence;
       if (!nextHints.length) nextHints = translated.hints;
       cacheKorean(key, ko, nextHints);
@@ -150,6 +154,7 @@ export default function TranslationTab({
   async function handleGetSentence() {
     // 진행 중인 평가가 있으면 결과를 버린다
     requestSeq.current += 1;
+    const { signal, isCurrent } = begin();
     setPicking(true);
     setPickError(null);
     setResult(null);
@@ -157,23 +162,26 @@ export default function TranslationTab({
     setError(null);
     try {
       if (mode === "ai") {
-        const next = await generateKoreanExercise(settings, difficulty, topic);
+        const next = await generateKoreanExercise(settings, difficulty, topic, {
+        signal,
+      });
         setEntry(null);
         setKorean(next.sentence);
         setHints(next.hints);
         setKoFromLlm(false);
         setRecycled(false);
       } else {
-        await handlePickFromCorpus(mode);
+        await handlePickFromCorpus(mode, signal);
       }
       setAnswer("");
     } catch (e) {
+      if (!isCurrent() || signal.aborted) return;
       setKorean("");
       setPickError(
         e instanceof Error ? e.message : "문장을 가져오는 중 오류가 발생했습니다.",
       );
     } finally {
-      setPicking(false);
+      if (isCurrent()) setPicking(false);
     }
   }
 
@@ -182,10 +190,13 @@ export default function TranslationTab({
     const english = answer.trim();
     const seq = ++requestSeq.current;
     const stale = () => seq !== requestSeq.current;
+    const { signal } = begin();
     setLoading(true);
     setError(null);
     try {
-      const r = await evaluateTranslation(settings, korean, english, entry?.en);
+      const r = await evaluateTranslation(settings, korean, english, entry?.en, {
+        signal,
+      });
       if (stale()) return;
       // 코퍼스 연습에서는 참고 번역 자리에 "실제 출판된 문장"을 보여준다.
       const finalResult: EvaluationResult = entry
@@ -194,7 +205,7 @@ export default function TranslationTab({
       setResult(finalResult);
       setEvaluated({ korean, english });
     } catch (e) {
-      if (stale()) return;
+      if (stale() || signal.aborted) return;
       setResult(null);
       setError(e instanceof Error ? e.message : "평가 중 오류가 발생했습니다.");
     } finally {
@@ -322,6 +333,23 @@ export default function TranslationTab({
           </p>
         )}
 
+        {picking && (
+          <div className="mt-3 flex items-center justify-center gap-3 text-sm text-slate-500">
+            <span
+              aria-hidden
+              className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent"
+            />
+            <span role="status">문장을 가져오고 있어요...</span>
+            <button
+              type="button"
+              onClick={cancel}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+            >
+              취소
+            </button>
+          </div>
+        )}
+
         {pickError && (
           <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
             <strong>오류:</strong> {pickError}
@@ -414,9 +442,19 @@ export default function TranslationTab({
       )}
 
       {loading && (
-        <div className="flex items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white p-8 text-sm text-slate-500">
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
-          LLM이 번역을 평가하고 있어요...
+        <div className="flex flex-wrap items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white p-8 text-sm text-slate-500">
+          <span
+            aria-hidden
+            className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent"
+          />
+          <span role="status">LLM이 번역을 평가하고 있어요...</span>
+          <button
+            type="button"
+            onClick={cancel}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+          >
+            취소
+          </button>
         </div>
       )}
 

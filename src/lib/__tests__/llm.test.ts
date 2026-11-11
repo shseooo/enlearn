@@ -243,6 +243,34 @@ describe("chatCompletion", () => {
       chatCompletion(settings, [{ role: "user", content: "hi" }]),
     ).rejects.toThrow(/\(빈 응답\)/);
   });
+
+  it("fetch에는 항상 signal이 들어간다 (기본 타임아웃)", async () => {
+    const m = mockFetchOk({ choices: [{ message: { content: "ok" } }] });
+    await chatCompletion(settings, [{ role: "user", content: "hi" }]);
+    const [, init] = m.mock.calls[0] as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal?.aborted).toBe(false);
+  });
+
+  it("사용자가 취소하면 취소 메시지를 던진다", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () =>
+              reject(new DOMException("The user aborted a request.", "AbortError")),
+            );
+          }),
+      ),
+    );
+    const controller = new AbortController();
+    const pending = chatCompletion(settings, [{ role: "user", content: "hi" }], {
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(pending).rejects.toThrow(/요청을 취소했습니다/);
+  });
 });
 
 describe("evaluateFreeWriting", () => {

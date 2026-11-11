@@ -141,12 +141,54 @@ function extractContentFromSse(body: string): string | null {
   return acc.trim() ? acc : null;
 }
 
+/** LLM 호출 옵션 */
+export interface ChatOptions {
+  temperature?: number;
+  maxTokens?: number;
+  /** 취소 버튼 등으로 중단할 때 쓰는 신호 */
+  signal?: AbortSignal;
+}
+
+/** 응답 없이 무한정 기다리지 않기 위한 기본 제한 (빌드 스크립트도 같은 방식을 쓴다) */
+export const LLM_TIMEOUT_MS = 120_000;
+
+function isAbortError(e: unknown): boolean {
+  return (e as Error | undefined)?.name === "AbortError";
+}
+
+/** AbortSignal.any가 없는 환경(jsdom 등)에서도 동작하는 신호 합치기 */
+function anySignal(signals: AbortSignal[]): AbortSignal {
+  if (typeof AbortSignal.any === "function") return AbortSignal.any(signals);
+  const controller = new AbortController();
+  for (const s of signals) {
+    if (s.aborted) controller.abort(s.reason);
+    else
+      s.addEventListener("abort", () => controller.abort(s.reason), {
+        once: true,
+      });
+  }
+  return controller.signal;
+}
+
+function cancellationMessage(userSignal?: AbortSignal): string {
+  if (userSignal?.aborted) return "요청을 취소했습니다.";
+  return (
+    `응답이 늦어 요청을 취소했습니다(${Math.round(LLM_TIMEOUT_MS / 1000)}초). ` +
+    "호스트·모델 설정이나 서버 상태를 확인하세요."
+  );
+}
+
 /** OpenAI 호환 /chat/completions API를 호출해 응답 본문(content)을 반환한다. */
 export async function chatCompletion(
   settings: LLMSettings,
   messages: ChatMessage[],
-  options: { temperature?: number; maxTokens?: number } = {},
+  options: ChatOptions = {},
 ): Promise<string> {
+  const timeoutSignal = AbortSignal.timeout(LLM_TIMEOUT_MS);
+  const signal = options.signal
+    ? anySignal([options.signal, timeoutSignal])
+    : timeoutSignal;
+
   let res: Response;
   try {
     res = await fetch(buildEndpoint(settings.host), {
@@ -162,8 +204,12 @@ export async function chatCompletion(
         ...(options.maxTokens != null ? { max_tokens: options.maxTokens } : {}),
         stream: false,
       }),
+      signal,
     });
-  } catch {
+  } catch (e) {
+    if (isAbortError(e) || signal.aborted) {
+      throw new Error(cancellationMessage(options.signal));
+    }
     throw new Error(
       "서버에 연결할 수 없습니다. (네트워크 또는 CORS 문제일 수 있습니다.)",
     );
@@ -178,6 +224,8 @@ export async function chatCompletion(
   // 본문을 먼저 텍스트로 받아 형식을 직접 판별한다.
   // (res.json()은 SSE/비JSON 본문에서 실패해 원인을 숨기므로)
   const body = await res.text().catch(() => "");
+  if (!body && signal.aborted)
+    throw new Error(cancellationMessage(options.signal));
   const contentType = res.headers.get("content-type") ?? "";
 
   let content: string | null = null;
@@ -245,11 +293,16 @@ function translationSystemPrompt(): string {
 export async function evaluateFreeWriting(
   settings: LLMSettings,
   sentence: string,
+  options: ChatOptions = {},
 ): Promise<EvaluationResult> {
-  const raw = await chatCompletion(settings, [
-    { role: "system", content: freeWritingSystemPrompt() },
-    { role: "user", content: `평가할 영어 문장:\n"""${sentence}"""` },
-  ]);
+  const raw = await chatCompletion(
+    settings,
+    [
+      { role: "system", content: freeWritingSystemPrompt() },
+      { role: "user", content: `평가할 영어 문장:\n"""${sentence}"""` },
+    ],
+    options,
+  );
   return parseEvaluation(raw);
 }
 
@@ -261,6 +314,7 @@ export async function evaluateTranslation(
   korean: string,
   english: string,
   reference?: string,
+  options: ChatOptions = {},
 ): Promise<EvaluationResult> {
   const ref = reference?.trim() ?? "";
   const userContent = [
@@ -276,10 +330,14 @@ export async function evaluateTranslation(
     );
   }
 
-  const raw = await chatCompletion(settings, [
-    { role: "system", content: translationSystemPrompt() },
-    { role: "user", content: userContent.join("\n\n") },
-  ]);
+  const raw = await chatCompletion(
+    settings,
+    [
+      { role: "system", content: translationSystemPrompt() },
+      { role: "user", content: userContent.join("\n\n") },
+    ],
+    options,
+  );
   return parseEvaluation(raw);
 }
 
@@ -295,6 +353,7 @@ export async function generateKoreanExercise(
   settings: LLMSettings,
   difficulty: Difficulty,
   topic?: string,
+  options: ChatOptions = {},
 ): Promise<KoreanExercise> {
   const trimmedTopic = topic?.trim() ?? "";
   const raw = await chatCompletion(
@@ -320,7 +379,7 @@ export async function generateKoreanExercise(
         ].join("\n"),
       },
     ],
-    { temperature: 0.8 },
+    { ...options, temperature: options.temperature ?? 0.8 },
   );
   return parseKoreanExercise(raw);
 }
@@ -330,6 +389,7 @@ export async function generateKoreanExercise(
 export async function translateSentenceToKorean(
   settings: LLMSettings,
   sentence: string,
+  options: ChatOptions = {},
 ): Promise<KoreanExercise> {
   const raw = await chatCompletion(
     settings,
@@ -345,18 +405,21 @@ export async function translateSentenceToKorean(
       },
       { role: "user", content: `영어 문장:\n"""${sentence}"""` },
     ],
-    { temperature: 0.3 },
+    { ...options, temperature: options.temperature ?? 0.3 },
   );
   return parseKoreanExercise(raw);
 }
 
 /** 설정 화면의 연결 테스트. 성공하면 LLM 응답 텍스트를 반환한다.
  *  추론(reasoning) 모델도 답까지 생성할 수 있도록 넉넉한 max_tokens를 사용한다. */
-export async function testConnection(settings: LLMSettings): Promise<string> {
+export async function testConnection(
+  settings: LLMSettings,
+  options: ChatOptions = {},
+): Promise<string> {
   const raw = await chatCompletion(
     settings,
     [{ role: "user", content: "연결 테스트입니다. ok만 답해 주세요." }],
-    { temperature: 0, maxTokens: 64 },
+    { ...options, temperature: options.temperature ?? 0, maxTokens: 64 },
   );
   return raw.trim();
 }
@@ -372,6 +435,7 @@ export async function askFollowUp(
   result: EvaluationResult,
   question: string,
   history: FollowUpTurn[] = [],
+  options: ChatOptions = {},
 ): Promise<string> {
   const contextLines: string[] = [];
   if (context.original) contextLines.push(`사용자 원문: """${context.original}"""`);
@@ -420,7 +484,7 @@ export async function askFollowUp(
       },
       { role: "user", content: userContent },
     ],
-    { temperature: 0.4 },
+    { ...options, temperature: options.temperature ?? 0.4 },
   );
   return raw.trim();
 }

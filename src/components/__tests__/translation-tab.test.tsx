@@ -104,6 +104,7 @@ describe("TranslationTab — 코퍼스 문장", () => {
       "톰은 많이 아파 보여.",
       "Tom looked very sick.",
       "Tom looks very sick.",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
 
     // 참고 번역 자리에 LLM 번역이 아니라 원문이 보인다
@@ -177,6 +178,7 @@ describe("TranslationTab — 코퍼스 문장", () => {
     expect(translateMock).toHaveBeenCalledWith(
       settings,
       "Alice was beginning to get very tired.",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(screen.getByText(/한국어는 AI가 영어 원문에서 번역한 것/)).toBeInTheDocument();
   });
@@ -209,7 +211,12 @@ describe("TranslationTab — AI 생성 (기존 방식)", () => {
     await user.click(screen.getByRole("button", { name: /문장 받기/ }));
 
     expect(await screen.findByText("여행을 좋아합니다.")).toBeInTheDocument();
-    expect(generateMock).toHaveBeenCalledWith(settings, "normal", "여행");
+    expect(generateMock).toHaveBeenCalledWith(
+      settings,
+      "normal",
+      "여행",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
 
     // 힌트는 접힌 상태(defaults)
     const details = screen

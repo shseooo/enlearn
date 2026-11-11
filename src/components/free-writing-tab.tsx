@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { LLMSettings, EvaluationResult } from "@/lib/types";
 import { isSettingsComplete } from "@/lib/settings";
 import { evaluateFreeWriting } from "@/lib/llm";
+import { useCancellable } from "@/lib/use-cancellable";
 import EvaluationCard from "./evaluation-card";
 
 interface FreeWritingTabProps {
@@ -21,23 +22,29 @@ export default function FreeWritingTab({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<EvaluationResult | null>(null);
+  const { begin, cancel } = useCancellable();
 
   const canSubmit =
     isSettingsComplete(settings) && sentence.trim().length > 0 && !loading;
 
   async function handleSubmit() {
     const trimmed = sentence.trim();
+    if (!trimmed) return;
+    const { signal, isCurrent } = begin();
     setLoading(true);
     setError(null);
     try {
-      const r = await evaluateFreeWriting(settings, trimmed);
+      const r = await evaluateFreeWriting(settings, trimmed, { signal });
+      if (!isCurrent()) return;
       setResult(r);
       setEvaluatedSentence(trimmed);
     } catch (e) {
+      // 취소(사용자·새 요청으로 인한 것)는 오류로 표시하지 않는다
+      if (!isCurrent() || signal.aborted) return;
       setResult(null);
       setError(e instanceof Error ? e.message : "평가 중 오류가 발생했습니다.");
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }
 
@@ -84,9 +91,19 @@ export default function FreeWritingTab({
       )}
 
       {loading && (
-        <div className="flex items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white p-8 text-sm text-slate-500">
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
-          LLM이 문장을 평가하고 있어요...
+        <div className="flex flex-wrap items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white p-8 text-sm text-slate-500">
+          <span
+            aria-hidden
+            className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent"
+          />
+          <span role="status">LLM이 문장을 평가하고 있어요...</span>
+          <button
+            type="button"
+            onClick={cancel}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+          >
+            취소
+          </button>
         </div>
       )}
 

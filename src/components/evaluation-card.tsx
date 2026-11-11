@@ -9,6 +9,7 @@ import type {
 } from "@/lib/types";
 import { isSettingsComplete } from "@/lib/settings";
 import { askFollowUp } from "@/lib/llm";
+import { useCancellable } from "@/lib/use-cancellable";
 import ScoreGauge, { scoreVerdict } from "./score-gauge";
 
 function CopyButton({ text }: { text: string }) {
@@ -55,22 +56,28 @@ export default function EvaluationCard({
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { begin, cancel } = useCancellable();
 
   const canAsk = isSettingsComplete(settings) && input.trim().length > 0 && !loading;
 
   async function handleSubmit() {
     const question = input.trim();
     if (!question) return;
+    const { signal, isCurrent } = begin();
     setLoading(true);
     setError(null);
     try {
-      const answer = await askFollowUp(settings, context, result, question, history);
+      const answer = await askFollowUp(settings, context, result, question, history, {
+        signal,
+      });
+      if (!isCurrent()) return;
       setHistory((h) => [...h, { question, answer }]);
       setInput("");
     } catch (e) {
+      if (!isCurrent() || signal.aborted) return;
       setError(e instanceof Error ? e.message : "질문 처리 중 오류가 발생했습니다.");
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }
 
@@ -167,9 +174,29 @@ export default function EvaluationCard({
         )}
 
         {error && (
-          <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+          <div
+            role="alert"
+            className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700"
+          >
             <strong>오류:</strong> {error}
           </div>
+        )}
+
+        {loading && (
+          <p role="status" className="mb-3 flex items-center gap-3 text-sm text-slate-500">
+            <span
+              aria-hidden
+              className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent"
+            />
+            답변을 받고 있어요...
+            <button
+              type="button"
+              onClick={cancel}
+              className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+            >
+              취소
+            </button>
+          </p>
         )}
 
         <form

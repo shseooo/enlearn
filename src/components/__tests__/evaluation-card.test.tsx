@@ -81,6 +81,7 @@ describe("EvaluationCard 추가 질문", () => {
       baseResult,
       "왜 went인가요?",
       [],
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -106,6 +107,7 @@ describe("EvaluationCard 추가 질문", () => {
       baseResult,
       "두 번째 질문",
       [{ question: "첫 번째 질문", answer: "첫 번째 답변입니다." }],
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
