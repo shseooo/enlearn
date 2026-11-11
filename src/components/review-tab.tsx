@@ -1,6 +1,11 @@
 "use client";
 
-import { useRef, useState, useSyncExternalStore } from "react";
+import {
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   LANE_SHORT_LABELS,
   REVIEW_INTERVALS,
@@ -98,12 +103,19 @@ export default function ReviewTab({
 
   // 서버 렌더에서는 스냅샷이 0이므로 Date를 만드는 함수를 부르지 않는다.
   // (Next 16은 Client Component 렌더 중 new Date()를 불안정 값으로 잡아 prerender를 실패시킨다)
-  const hasData = snapshot.total > 0;
-  const today = hasData ? localToday() : "";
-  const weeks = hasData ? weeklySeries(8) : [];
-  const queue = snapshot.due > 0 ? dueItems() : [];
-  const nextDue =
-    snapshot.srs > 0 && snapshot.due === 0 ? nextReviewDate() : null;
+  // localStorage를 읽는 계산은 스냅샷이 바뀔 때만 한다. 이 탭은 다른 탭에서
+  // 키를 입력할 때마다 다시 렌더되는데, 그때마다 5번씩 파싱하지 않는다(3-10).
+  const derived = useMemo(() => {
+    const has = snapshot.total > 0;
+    return {
+      today: has ? localToday() : "",
+      weeks: has ? weeklySeries(8) : [],
+      queue: snapshot.due > 0 ? dueItems() : [],
+      nextDue:
+        snapshot.srs > 0 && snapshot.due === 0 ? nextReviewDate() : null,
+    };
+  }, [snapshot]);
+  const { today, weeks, queue, nextDue } = derived;
   const current =
     (currentId ? queue.find((x) => x.id === currentId) : null) ??
     queue[0] ??

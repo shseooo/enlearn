@@ -259,6 +259,8 @@ export default function TranslationTab({
       logPractice({
         lane: mode,
         en: entry?.en ?? finalResult.referenceTranslation ?? "",
+        // AI 생성 문장은 참고 번역이 매번 달라진다 → id는 화면에 보이는 한국어 문장 기준
+        anchor: entry ? undefined : korean,
         ko: korean,
         answer: english,
         score: finalResult.score,

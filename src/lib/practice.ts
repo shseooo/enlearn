@@ -51,7 +51,7 @@ export function addDays(date: string, days: number): string {
   return localDateString(d);
 }
 
-/** 두 로컬 날짜 사이의 일수 (b - a) */
+/** 두 로컬 날짜 사이의 일수 (b - a). 날짜 규칙을 검증하는 테스트에서도 쓴다. */
 export function daysBetween(a: string, b: string): number {
   return Math.round(
     (parseLocal(b).getTime() - parseLocal(a).getTime()) / 86_400_000,
@@ -143,6 +143,12 @@ export interface PracticeInput {
   corrections?: CorrectionNote[];
   /** 기록 시각(테스트용) */
   now?: Date;
+  /**
+   * id를 만들 문장. 기본값은 en이지만 AI 생성 연습에서는 en이 모델이 만든
+   * 참고 번역이라 풀 때마다 달라진다 → 같은 문장을 여러 번 푸는데 기록이
+   * 중복되고 lastAnswerFor가 놓친다. 그런 곳은 사용자 입력(한국어 문장)을 준다.
+   */
+  anchor?: string;
 }
 
 export function practiceId(lane: PracticeLane, sentence: string): string {
@@ -201,7 +207,8 @@ export function logPractice(input: PracticeInput): PracticeRecord | null {
   if (!answer) return null;
 
   const now = input.now ?? new Date();
-  const id = practiceId(input.lane, en || answer);
+  // anchor가 있으면 그 문장 기준으로 id를 만든다 (AI 생성 연습의 en은 매번 바뀐다)
+  const id = practiceId(input.lane, clip(input.anchor) || en || answer);
   const record: PracticeRecord = {
     id,
     date: localDateString(now),

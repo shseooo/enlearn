@@ -491,3 +491,49 @@ describe("TranslationTab — AI 생성", () => {
     expect(screen.queryByText(/힌트 단어/)).not.toBeInTheDocument();
   });
 });
+
+describe("TranslationTab — AI 생성 기록 id (리뷰 3-10)", () => {
+  it("AI 생성 문장을 다시 풀면 기록이 중복되지 않는다", async () => {
+    // en(참고 번역)은 모델이 매번 다르게 쓴다. 그걸로 id를 만들면 같은 문장을
+    // 두 번 풀었을 때 기록이 늘고 lastAnswerFor가 이전 답을 못 찾는다.
+    generateMock.mockResolvedValue({ sentence: "오늘 날씨가 좋네요.", hints: ["weather"] });
+    evaluateMock
+      .mockResolvedValueOnce({
+        score: 60,
+        feedback: "첫 평가",
+        corrections: [],
+        betterExpression: "The weather is nice today.",
+        referenceTranslation: "The weather is nice today.",
+      })
+      .mockResolvedValueOnce({
+        score: 85,
+        feedback: "두 번째 평가",
+        corrections: [],
+        betterExpression: "It is a lovely day.",
+        referenceTranslation: "It is a lovely day today.",
+      });
+
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.selectOptions(screen.getByLabelText(/문장 출처/), "ai");
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await screen.findByText("오늘 날씨가 좋네요.");
+    await user.type(screen.getByLabelText(/내 영어 번역/), "Today weather good.");
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+    await screen.findByText("첫 평가");
+
+    await user.clear(screen.getByLabelText(/내 영어 번역/));
+    await user.type(
+      screen.getByLabelText(/내 영어 번역/),
+      "The weather is nice today.",
+    );
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+    await screen.findByText("두 번째 평가");
+
+    const log = JSON.parse(window.localStorage.getItem("enlearn.log.v1") ?? "[]");
+    expect(log).toHaveLength(1);
+    expect(log[0].score).toBe(85);
+    expect(log[0].lane).toBe("ai");
+  });
+});
