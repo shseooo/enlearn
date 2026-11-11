@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LLMSettings } from "@/lib/types";
-import { saveSettings } from "@/lib/settings";
 import { checkHost, testConnection } from "@/lib/llm";
 
 interface SettingsTabProps {
   settings: LLMSettings;
+  /** 저장은 store(saveSettings) 한 곳에서만 일어난다. 화면은 의뢰만 한다. */
   onSaved: (settings: LLMSettings) => void;
 }
 
@@ -18,15 +18,32 @@ type TestState =
 
 /** ⚙️ 설정: LLM host/model/apiKey (localStorage 저장) */
 export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
-  const [host, setHost] = useState(settings.host);
-  const [model, setModel] = useState(settings.model);
-  const [apiKey, setApiKey] = useState(settings.apiKey);
+  /**
+   * 저장된 값(props)과 다른 '아직 저장하지 않은 편집'만 따로 담는다.
+   * - 편집이 없으면 다른 탭/다른 화면의 저장값이 그대로 반영된다.
+   * - 편집 중이면 외부 저장이 입력창을 덮어쓰지 않는다.
+   */
+  const [edited, setEdited] = useState<LLMSettings | null>(null);
+  const draft = edited ?? settings;
+  const dirty = edited !== null;
   const [showKey, setShowKey] = useState(false);
   const [saved, setSaved] = useState(false);
   const [test, setTest] = useState<TestState>({ status: "idle" });
 
+  const host = draft.host;
+  const model = draft.model;
+  const apiKey = draft.apiKey;
+
   const hostCheck = checkHost(host);
   const canSave = hostCheck.ok && Boolean(model.trim());
+
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    },
+    [],
+  );
 
   function handleSave() {
     if (!canSave) return;
@@ -35,10 +52,12 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
       model: model.trim(),
       apiKey: apiKey.trim(),
     };
-    saveSettings(next);
+    // 저장은 onSaved(store) 한 번만. localStorage를 두 번 쓰면 이벤트·재렌더도 두 번 된다.
     onSaved(next);
+    setEdited(null);
     setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(false), 2000);
   }
 
   async function handleTest() {
@@ -88,7 +107,7 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
               id="llm-host"
               type="url"
               value={host}
-              onChange={(e) => setHost(e.target.value)}
+              onChange={(e) => setEdited({ ...draft, host: e.target.value })}
               placeholder="https://api.openai.com/v1"
               aria-invalid={!hostCheck.ok}
               aria-describedby="llm-host-help"
@@ -119,7 +138,7 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
               id="llm-model"
               type="text"
               value={model}
-              onChange={(e) => setModel(e.target.value)}
+              onChange={(e) => setEdited({ ...draft, model: e.target.value })}
               placeholder="gpt-4o-mini"
               className="w-full rounded-xl border border-slate-300 p-3 font-mono text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
             />
@@ -137,7 +156,7 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
                 id="llm-apikey"
                 type={showKey ? "text" : "password"}
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => setEdited({ ...draft, apiKey: e.target.value })}
                 placeholder="sk-..."
                 autoComplete="off"
                 className="w-full rounded-xl border border-slate-300 p-3 font-mono text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
@@ -170,6 +189,9 @@ export default function SettingsTab({ settings, onSaved }: SettingsTabProps) {
           >
             {test.status === "testing" ? "테스트 중..." : "🔌 연결 테스트"}
           </button>
+          <p role="status" className="text-xs text-slate-400">
+            {dirty ? "· 저장하지 않은 변경이 있습니다" : "· 저장된 값과 같습니다"}
+          </p>
         </div>
 
         {test.status === "ok" && (
