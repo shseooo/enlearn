@@ -369,3 +369,37 @@ describe("키·어절 계산", () => {
     );
   });
 });
+
+describe("lemma — 코퍼스 어휘를 주면 조각을 만들지 않는다", () => {
+  const vocab = new Map<string, number>([
+    ["anything", 30], ["surprised", 5], ["surprise", 12], ["spread", 8],
+    ["spreads", 4], ["run", 20], ["ran", 15], ["he", 900],
+  ]);
+
+  it("어휘에 없는 기본형으로 줄이지 않는다", () => {
+    expect(lemma("anything", vocab)).toBe("anything"); // anyth(조각) 금지
+    expect(lemma("surprised", vocab)).toBe("surprise"); // surpris → surprise
+    expect(lemma("spreads", vocab)).toBe("spread");
+    expect(lemma("ran", vocab)).toBe("run"); // 불규칙 활용
+    expect(lemma("umbrella", vocab)).toBe("umbrella"); // 후보가 없으면 표면형
+  });
+});
+
+describe("pickHints — 약한 힌트를 걸러낸다", () => {
+  const stats = buildFrequency([
+    "The old man said anything to the boy and he ran away quickly.",
+    "Nobody said anything and the boy ran away with him quickly.",
+    "The old man laughed and the boy ran away quickly with him.",
+  ]);
+
+  it("대명사·부정대명사와 조각은 힌트에 들어가지 않는다", () => {
+    const hints = pickHints(
+      "The old man said anything to the boy and he ran away with him.",
+      stats,
+    );
+    expect(hints).not.toContain("him");
+    expect(hints).not.toContain("anything");
+    expect(hints).not.toContain("anyth");
+    for (const h of hints) expect(h).toMatch(/^[a-z]{2,}$/);
+  });
+});

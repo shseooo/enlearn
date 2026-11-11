@@ -30,7 +30,10 @@ const STOPWORDS = new Set(
    having will would shall should can could may might must not no nor than then too
    very so such what when where which who whom whose why how all any some such own
    same up out off again once also just only more most other another both each few
-   about against between while during before after above below s t re ve ll d m`
+   about against between while during before after above below s t re ve ll d m
+   him himself herself itself myself yourself yourselves anybody anyone anything
+   everybody everyone everything nobody nothing somebody someone something none
+   one ones somebody`
     .split(/\s+/),
 );
 
@@ -314,36 +317,63 @@ export function gradeDifficulty(
  * 활용형을 사전형으로 줄인다 (최선 추정: 어미만 잘라낸다).
  * spreads → spread, opened → open, running → run, gardens → garden
  */
-export function lemma(word: string): string {
+/** 규칙으로 줄이기 어려운 불규칙 활용 (힌트 품질용 소규모 표) */
+const IRREGULAR_BASE: Record<string, string> = {
+  ran: "run", went: "go", stood: "stand", sat: "sit", told: "tell", said: "say",
+  had: "have", made: "make", found: "find", thought: "think", came: "come",
+  took: "take", knew: "know", wrote: "write", spoke: "speak", wore: "wear",
+  drove: "drive", ate: "eat", drank: "drink", sang: "sing", began: "begin",
+  swam: "swim", flew: "fly", grew: "grow", threw: "throw", held: "hold",
+  left: "leave", felt: "feel", meant: "mean", built: "build", bought: "buy",
+  brought: "bring", caught: "catch", taught: "teach", fought: "fight",
+  slept: "sleep", kept: "keep", met: "meet", saw: "see", was: "be", were: "be",
+};
+
+/**
+ * 활용형에서 기본형을 추정한다.
+ * vocab(코퍼스 어휘)를 주면 **실제로 사전에 있는 기본형**만 받아들인다.
+ * 어휘 정보가 없는 상태에서는 `anything → anyth` 같은 조각을 만들 수 있다.
+ */
+export function lemma(
+  word: string,
+  vocab?: Map<string, number> | Set<string>,
+): string {
   let w = word.toLowerCase().replace(/[^a-z']/g, "").replace(/'+$/g, "");
   if (!w) return "";
   w = w.replace(/'s$/, "");
+  if (!w) return "";
 
   const trim = (base: string): string =>
     /(.)\1$/.test(base) && base.length > 3 ? base.slice(0, -1) : base;
 
-  if (w.endsWith("ies") && w.length > 4) return `${w.slice(0, -3)}y`;
-  if (w.endsWith("ing") && w.length > 5) return trim(w.slice(0, -3));
-  if (w.endsWith("ed") && w.length > 4) return trim(w.slice(0, -2));
-  if (w.endsWith("es") && w.length > 4) return w.slice(0, -2);
-  if (
-    w.endsWith("s") &&
-    w.length > 3 &&
-    !/(ss|us|is|ss)$/.test(w)
-  )
-    return w.slice(0, -1);
-  return w;
+  // 기본형 후보(먼저) → 표면형(나중)
+  const candidates: string[] = [];
+  const irregular = IRREGULAR_BASE[w];
+  if (irregular) candidates.push(irregular);
+  if (w.endsWith("ies") && w.length > 4) candidates.push(`${w.slice(0, -3)}y`);
+  if (w.endsWith("ing") && w.length > 5) {
+    const stem = trim(w.slice(0, -3));
+    candidates.push(stem, `${stem}e`);
+  }
+  if (w.endsWith("ed") && w.length > 4) {
+    const stem = trim(w.slice(0, -2));
+    candidates.push(stem, `${stem}e`);
+  }
+  if (w.endsWith("es") && w.length > 4) candidates.push(w.slice(0, -2));
+  if (w.endsWith("s") && w.length > 3 && !/(ss|us|is)$/.test(w)) {
+    candidates.push(w.slice(0, -1));
+  }
+
+  if (vocab) {
+    const has = (c: string) =>
+      vocab instanceof Map ? vocab.has(c) : vocab.has(c);
+    for (const c of candidates) if (has(c)) return c;
+    // 어떤 후보도 코퍼스에 없으면 억지로 줄이지 않고 표면형을 쓴다
+    return w;
+  }
+  return candidates[0] ?? w;
 }
 
-/**
- * 번역에 꼭 필요한 영어 힌트 단어 2~4개. 드문 내용 어휘를 우선한다.
- *
- * 정답을 그대로 흘리지 않기 위한 규칙:
- * - 문장 첫 단어는 제외한다 (주어·화자를 바로 드러내지 않는다)
- * - 문장 중간에서 대문자로 시작하는 단어는 고유명사로 보고 제외한다
- * - 숫자·구두점 파편("'tweedle'", "3rd")은 제외한다
- * - 활용형은 사전형으로 돌려 학습자가 직접 활용하게 한다
- */
 export function pickHints(
   sentence: string,
   stats: CorpusStats,
@@ -360,7 +390,7 @@ export function pickHints(
     // 3자 미만·숫자·구두점 파편·축약형(don't, they've)은 힌트로 쓰지 않는다
     if (!/^[a-z][a-z]{2,}$/.test(clean)) return;
 
-    const base = lemma(clean);
+    const base = lemma(clean, stats.freq);
     if (base.length < 3) return;
     if (STOPWORDS.has(clean) || STOPWORDS.has(base)) return;
     if (taken.has(base)) return;

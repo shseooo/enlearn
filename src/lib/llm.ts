@@ -217,16 +217,24 @@ class NetworkError extends Error {}
 
 /** HTTP 상태 코드를 보존하는 내부 오류. 사용자에게는 message만 보인다. */
 class HttpError extends Error {
+  status: number;
+  retryAfter: string | null;
+  retryable: boolean;
+
   constructor(
-    readonly status: number,
+    status: number,
     statusText: string,
     body: string,
-    readonly retryAfter: string | null,
-    readonly retryable: boolean,
+    retryAfter: string | null,
+    retryable: boolean,
   ) {
     const detail = sanitizeProviderBody(body);
     super(`HTTP ${status} ${statusText}${detail ? `: ${detail}` : ""}`);
     this.name = "HttpError";
+    // 파라미터 프로퍼티는 node의 strip-only TS 모드에서 실행되지 않으므로 직접 대입한다
+    this.status = status;
+    this.retryAfter = retryAfter;
+    this.retryable = retryable;
   }
 }
 
