@@ -5,6 +5,7 @@ import {
   entryKey,
   gradeDifficulty,
   isPracticeSentence,
+  lemma,
   normalizeKey,
   normalizeProse,
   pickHints,
@@ -238,15 +239,15 @@ describe("pickHints", () => {
     "She opened the little door and looked through into the garden.",
   ]);
 
-  it("3개 이하의 영어 단어만 돌려준다", () => {
+  it("2~4개의 영어 단어만 돌려준다", () => {
     const hints = pickHints(
       "The little girl opened the golden door and saw the rabbit.",
       stats,
     );
-    expect(hints.length).toBeLessThanOrEqual(3);
+    expect(hints.length).toBeLessThanOrEqual(4);
     expect(hints.length).toBeGreaterThan(0);
     for (const h of hints) {
-      expect(h).toMatch(/^[a-z']+$/);
+      expect(h).toMatch(/^[a-z]+$/);
       expect(h).not.toBe("the");
     }
   });
@@ -257,6 +258,46 @@ describe("pickHints", () => {
       stats,
     );
     expect(hints).toContain("golden");
+  });
+
+  it("문장 첫 단어와 문장 중간 고유명사는 힌트에서 뺀다", () => {
+    const hints = pickHints(
+      "Alice opened the golden door with a small key today.",
+      stats,
+    );
+    expect(hints).not.toContain("alice");
+    expect(hints).not.toContain("open");
+  });
+
+  it("구두점 파편·숫자·고유명사는 힌트로 쓰지 않는다", () => {
+    const hints = pickHints(
+      "She shouted TWEEDLE and counted 123 golden coins together.",
+      stats,
+    );
+    for (const h of hints) expect(h).toMatch(/^[a-z]+$/);
+    expect(hints).not.toContain("tweedle");
+    expect(hints).not.toContain("123");
+  });
+
+  it("seed가 다르면 상위 후보 안에서 다른 단어도 고른다", () => {
+    const sentence =
+      "The golden rabbit opened the little door and ran through the secret garden.";
+    const a = pickHints(sentence, stats, 0);
+    const b = pickHints(sentence, stats, 5);
+    expect(a).not.toEqual(b);
+  });
+});
+
+describe("lemma", () => {
+  it("활용형을 사전형으로 줄인다", () => {
+    expect(lemma("spreads")).toBe("spread");
+    expect(lemma("opened")).toBe("open");
+    expect(lemma("running")).toBe("run");
+    expect(lemma("gardens")).toBe("garden");
+    expect(lemma("babies")).toBe("baby");
+    expect(lemma("boxes")).toBe("box");
+    expect(lemma("dog")).toBe("dog");
+    expect(lemma("the")).toBe("the");
   });
 });
 
