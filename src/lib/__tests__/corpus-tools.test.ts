@@ -92,6 +92,33 @@ describe("splitSentences", () => {
     );
     expect(parts.some((p) => p.startsWith('"Be off, home!"'))).toBe(true);
   });
+
+  it("약어·말줄임표·따옴표가 섞인 지문을 정확히 나눈다 (회귀 스냅샷)", () => {
+    const text =
+      "Mr. Jones went to St. Paul. He waited by the door... and left. " +
+      ' "Are you coming?" she asked. "I cannot wait long." ' +
+      "The train was late; however, it arrived at last. Everyone cheered.";
+    expect(splitSentences(text)).toEqual([
+      "Mr. Jones went to St. Paul.",
+      "He waited by the door... and left.",
+      '"Are you coming?" she asked.',
+      '"I cannot wait long."',
+      "The train was late; however, it arrived at last.",
+      "Everyone cheered.",
+    ]);
+  });
+
+  it("책 한 권 분량의 텍스트도 선형 시간으로 처리한다", () => {
+    // 이전 구현은 토큰마다 tokens.slice(i + 1)를 복사했다 (200k 토큰에 5초)
+    const unit =
+      "The little girl opened the door and saw the rabbit. Dr. Jones waited. ";
+    const text = unit.repeat(10_000); // ~170k 토큰
+    const started = performance.now();
+    const parts = splitSentences(text);
+    const elapsed = performance.now() - started;
+    expect(parts.length).toBe(20_000);
+    expect(elapsed).toBeLessThan(1_500);
+  });
 });
 
 describe("isPracticeSentence", () => {

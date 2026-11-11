@@ -117,19 +117,31 @@ export function normalizeProse(text: string): string {
 export function splitSentences(text: string): string[] {
   const out: string[] = [];
   const tokens = text.split(/(\s+)/);
+  const n = tokens.length;
+
+  // tokens.slice(i + 1).find(...)는 토큰마다 나머지 배열을 복사해 O(n²)이었다
+  // (책 한 권 200k 토큰에 5초). 뒤에서 한 번 훑어 "다음 실단어 인덱스"를 O(n)으로 준비한다.
+  const isSpace: boolean[] = new Array(n);
+  for (let i = 0; i < n; i++) isSpace[i] = /^\s+$/.test(tokens[i]);
+  const nextWord = new Int32Array(n).fill(-1);
+  let lastWord = -1;
+  for (let i = n - 1; i >= 0; i--) {
+    nextWord[i] = lastWord;
+    if (!isSpace[i]) lastWord = i;
+  }
+
   let buf = "";
 
-  for (let i = 0; i < tokens.length; i++) {
-    const tok = tokens[i];
-    if (/^\s+$/.test(tok)) {
-      buf += tok;
+  for (let i = 0; i < n; i++) {
+    if (isSpace[i]) {
+      buf += tokens[i];
       continue;
     }
-    buf += tok;
+    buf += tokens[i];
 
     // 다음 토큰이 새 문장(대문자/따옴표 시작)인지 본다
-    const next = tokens.slice(i + 1).find((t) => !/^\s+$/.test(t));
-    if (!next) continue;
+    const nextWordIndex = nextWord[i];
+    if (nextWordIndex < 0) continue;
 
     const closed = buf.replace(/[\s\u00a0]+$/, "");
     const tail = closed.replace(/["')\]\u201d]+$/, "");
@@ -140,7 +152,7 @@ export function splitSentences(text: string): string[] {
     if (ABBREVIATIONS.has(beforeDot.toLowerCase())) continue;
     if (/\.\s*\.\s*\.$/.test(tail) || tail.endsWith("\u2026")) continue;
     // "he said." 뒤의 대문자처럼 보이지만 실제로는 인용 시작인 경우도 허용
-    if (!/^[A-Z"\u201c]/.test(next.trim().slice(0, 1))) continue;
+    if (!/^[A-Z"\u201c]/.test(tokens[nextWordIndex].slice(0, 1))) continue;
 
     out.push(closed.trim());
     buf = "";
