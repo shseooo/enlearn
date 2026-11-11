@@ -20,19 +20,44 @@ describe("parseTranslationBatch", () => {
     expect(map.get(ENS[1])?.hints).toEqual(["alice"]);
   });
 
-  it("0-based 번호와 배열만 온 응답도 받아준다", () => {
+  it("0-based 번호도 받아들인다", () => {
     const zeroBased = parseTranslationBatch(
       JSON.stringify({ items: [{ i: 0, ko: "토끼 문장입니다." }] }),
       ENS,
     );
     expect(zeroBased.get(ENS[0])?.ko).toBe("토끼 문장입니다.");
+  });
 
-    const bareArray = parseTranslationBatch(
-      JSON.stringify([{ ko: "첫째." }, { ko: "둘째." }]),
+  it("식별자 없는 배열은 개수가 맞을 때만 순서대로 대응시킨다 (리뷰 3-8)", () => {
+    const sameSize = parseTranslationBatch(
+      JSON.stringify([{ ko: "첫째 문장입니다." }, { ko: "둘째 문장입니다." }, { ko: "셋째 문장입니다." }]),
       ENS,
     );
-    expect(bareArray.size).toBe(2);
-    expect(bareArray.get(ENS[1])?.ko).toBe("둘째.");
+    expect(sameSize.size).toBe(3);
+    expect(sameSize.get(ENS[2])?.ko).toBe("셋째 문장입니다.");
+
+    // 개수가 모자라면 자릿수 추측으로 엉뚱한 문장에 붙인다 → 전부 폐기
+    const partial = parseTranslationBatch(
+      JSON.stringify([{ ko: "첫 번째 문장입니다." }, { ko: "세 번째 문장입니다." }]),
+      ENS,
+    );
+    expect(partial.size).toBe(0);
+  });
+
+  it("번호·원문 없는 항목은 버린다 (리뷰 3-8)", () => {
+    const map = parseTranslationBatch(
+      JSON.stringify({
+        items: [
+          { i: 1, ko: "번호 있는 첫 문장입니다." },
+          { ko: "번호 없는 항목입니다." },
+          { ko: "또 다른 번호 없는 항목입니다." },
+        ],
+      }),
+      ENS,
+    );
+    expect([...map.keys()]).toEqual([ENS[0]]);
+    expect(map.get(ENS[1])).toBeUndefined();
+    expect(map.get(ENS[2])).toBeUndefined();
   });
 
   it("번호가 어긋나면 원문(en) 키로 대조하고, 그것도 없으면 버린다", () => {

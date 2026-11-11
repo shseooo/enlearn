@@ -64,6 +64,19 @@ export function parseTranslationBatch(
   const byKey = new Map<string, string>();
   expected.forEach((en, index) => byKey.set(keyOf(en), String(index)));
 
+  // 식별자(i/en/sentence)가 단 하나도 없는 배열만 "순서대로"로 해석한다.
+  const orderedOnly = items.every((item) => {
+    if (typeof item !== "object" || item === null) return true;
+    const o = item as Record<string, unknown>;
+    return (
+      o.i === undefined &&
+      o.index === undefined &&
+      o.n === undefined &&
+      typeof o.en !== "string" &&
+      typeof o.sentence !== "string"
+    );
+  });
+
   for (const [position, item] of items.entries()) {
     if (typeof item !== "object" || item === null) continue;
     const o = item as Record<string, unknown>;
@@ -85,8 +98,15 @@ export function parseTranslationBatch(
         typeof o.en === "string" ? o.en : typeof o.sentence === "string" ? o.sentence : "";
       const found = en ? byKey.get(keyOf(en)) : undefined;
       // 번호가 어긋났는데 원문 대조까지 실패하면 "자리가 이쯤이니 이 문장"으로
-      // 추측하지 않는다. 잘못 붙은 번역은 고치기 어렵다.
-      index = found !== undefined ? Number(found) : hasIndex || en ? -1 : position;
+      // 추측하지 않는다. 엉뚱한 번역이 붙으면 코퍼스에 영구로 남는다.
+      // 자릿수 대응은 "식별자가 하나도 없는 완전한 목록"일 때만 허용한다(순서 약속).
+      if (found !== undefined) {
+        index = Number(found);
+      } else if (!hasIndex && !en && orderedOnly && items.length === expected.length) {
+        index = position;
+      } else {
+        index = -1;
+      }
     }
     if (index < 0 || index >= expected.length) continue;
     if (out.has(expected[index])) continue; // 앞의 항목 우선

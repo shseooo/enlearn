@@ -164,6 +164,47 @@ describe("ReviewTab", () => {
     expect(dueItems()).toHaveLength(2); // 평점하지 않았으므로 둘 다 대기 중
   });
 
+
+  it("다른 문장 버튼은 큐를 순환한다 — 세 번째 문장도 보인다 (리뷰 3-5)", async () => {
+    for (const ko of ["첫 번째 순환 문장.", "두 번째 순환 문장.", "세 번째 순환 문장."]) {
+      practiceYesterday({
+        en: `${ko} sentence for rotation.`,
+        ko,
+        answer: "answer",
+      });
+    }
+    renderTab();
+    const user = userEvent.setup();
+
+    const shown: string[] = [];
+    shown.push((await screen.findByText(/순환 문장\.$/)).textContent ?? "");
+    for (let i = 0; i < 2; i++) {
+      await user.click(screen.getByRole("button", { name: /다른 문장/ }));
+      const at = dueItems().find((x) => x.ko === shown[shown.length - 1]);
+      // 같은 문장이 두 번 연속 나오면 안 된다
+      shown.push(
+        ((await screen.findByText(/순환 문장\.$/)) as HTMLElement).textContent ?? "",
+      );
+      void at;
+    }
+    expect(new Set(shown).size).toBe(3);
+    expect(shown[0]).not.toBe(shown[1]);
+    expect(shown[1]).not.toBe(shown[2]);
+  });
+
+  it("대기가 하나면 다른 문장을 눌러도 같은 문장이 유지된다", async () => {
+    practiceYesterday({
+      en: "Only sentence in the queue.",
+      ko: "큐에 하나뿐인 문장.",
+      answer: "answer",
+    });
+    renderTab();
+    const user = userEvent.setup();
+    await screen.findByText("큐에 하나뿐인 문장.");
+    await user.click(screen.getByRole("button", { name: /다른 문장/ }));
+    expect(screen.getByText("큐에 하나뿐인 문장.")).toBeInTheDocument();
+  });
+
   it("연습 현황과 자주 틀리는 표현을 함께 보여준다", async () => {
     practiceYesterday({
       en: "A sentence with a repeated mistake.",

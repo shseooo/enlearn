@@ -108,9 +108,18 @@ export default function ReviewTab({
     queue[0] ??
     null;
 
+  /**
+   * "다른 문장"은 큐를 순환한다. (현재 것을 빼고 첫 항목)이면 A→B→A→B로 진동해서
+   * 세 번째 문장부터 영영 보여지지 않는다(리뷰 3-5).
+   */
   function loadNext(excludeId?: string): void {
-    const next = queue.filter((x) => x.id !== excludeId)[0];
-    setCurrentId(next?.id ?? null);
+    if (queue.length <= 1) {
+      setCurrentId(null);
+    } else {
+      const at = queue.findIndex((x) => x.id === (excludeId ?? current?.id));
+      const next = queue[((at < 0 ? 0 : at) + 1) % queue.length];
+      setCurrentId(next.id);
+    }
     setAnswer("");
     setRevealed(false);
   }
