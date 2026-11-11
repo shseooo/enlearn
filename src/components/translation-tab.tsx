@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   CorpusEntry,
   CorpusLane,
@@ -75,6 +75,12 @@ export default function TranslationTab({
 
   const isCorpus = mode !== "ai";
 
+  /**
+   * 진행 중인 요청과 화면 결과를 구분하는 토큰
+   * (문장을 먼저 바꾼 뒤 이전 평가 응답이 늦게 도착하면 다른 문장 위에 덮어써진다)
+   */
+  const requestSeq = useRef(0);
+
   // 책 드롭다운에 제목을 채우기 위해 코퍼스 목록을 미리 읽어둔다.
   useEffect(() => {
     if (mode !== "classic") return;
@@ -91,9 +97,14 @@ export default function TranslationTab({
     };
   }, [mode]);
 
-  const canPick = !picking && (isCorpus || isSettingsComplete(settings));
+  const canPick =
+    !picking && !loading && (isCorpus || isSettingsComplete(settings));
   const canEvaluate =
-    isSettingsComplete(settings) && korean.length > 0 && answer.trim().length > 0 && !loading;
+    isSettingsComplete(settings) &&
+    !picking &&
+    korean.length > 0 &&
+    answer.trim().length > 0 &&
+    !loading;
 
   /** 코퍼스에서 아직 안 풀어본 문장을 하나 꺼낸다. (동화는 첫 한국어만 LLM 번역) */
   async function handlePickFromCorpus(lane: CorpusLane) {
@@ -137,6 +148,8 @@ export default function TranslationTab({
   }
 
   async function handleGetSentence() {
+    // 진행 중인 평가가 있으면 결과를 버린다
+    requestSeq.current += 1;
     setPicking(true);
     setPickError(null);
     setResult(null);
@@ -167,10 +180,13 @@ export default function TranslationTab({
   async function handleEvaluate() {
     if (!korean) return;
     const english = answer.trim();
+    const seq = ++requestSeq.current;
+    const stale = () => seq !== requestSeq.current;
     setLoading(true);
     setError(null);
     try {
       const r = await evaluateTranslation(settings, korean, english, entry?.en);
+      if (stale()) return;
       // 코퍼스 연습에서는 참고 번역 자리에 "실제 출판된 문장"을 보여준다.
       const finalResult: EvaluationResult = entry
         ? { ...r, referenceTranslation: entry.en }
@@ -178,10 +194,11 @@ export default function TranslationTab({
       setResult(finalResult);
       setEvaluated({ korean, english });
     } catch (e) {
+      if (stale()) return;
       setResult(null);
       setError(e instanceof Error ? e.message : "평가 중 오류가 발생했습니다.");
     } finally {
-      setLoading(false);
+      if (!stale()) setLoading(false);
     }
   }
 
@@ -321,7 +338,7 @@ export default function TranslationTab({
             <button
               type="button"
               onClick={handleGetSentence}
-              disabled={picking}
+              disabled={picking || loading}
               className="rounded-md px-2 py-1 text-xs font-medium text-indigo-600 transition hover:bg-indigo-50 disabled:opacity-50"
             >
               🔄 다시 받기

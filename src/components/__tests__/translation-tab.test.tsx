@@ -115,6 +115,34 @@ describe("TranslationTab — 코퍼스 문장", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("평가 중에는 문장을 다시 받을 수 없다 (늦은 응답이 새 문장 위에 얹히는 것 방지)", async () => {
+    let settle!: (value: unknown) => void;
+    const pending = new Promise<unknown>((resolve) => {
+      settle = resolve;
+    });
+    evaluateMock.mockImplementation(() => pending);
+    prefillCorpus("daily", dailyFile);
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await screen.findByText("톰은 많이 아파 보여.");
+    await user.type(screen.getByLabelText(/내 영어 번역/), "Tom looked sick.");
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+
+    expect(screen.getByRole("button", { name: /문장 받기/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /다시 받기/ })).toBeDisabled();
+
+    settle({
+      score: 80,
+      feedback: "좋습니다.",
+      corrections: [],
+      betterExpression: "Tom looks sick.",
+    });
+    expect(await screen.findByText("Tom looks sick.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /문장 받기/ })).toBeEnabled();
+  });
+
   it("이미 받은 문장을 다시 받으면 다시 나온 것임을 알려준다", async () => {
     prefillCorpus("daily", dailyFile);
     render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
