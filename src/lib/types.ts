@@ -47,3 +47,42 @@ export interface FollowUpTurn {
   question: string;
   answer: string;
 }
+
+// ---------------------------------------------------------------------------
+// 코퍼스 (실제 출판 문장에서 가져온 연습 문장)
+// ---------------------------------------------------------------------------
+
+/** daily = Tatoeba 일상 회화 / classic = 퍼블릭 도메인 동화 원문 */
+export type CorpusLane = "daily" | "classic";
+
+export interface CorpusEntry {
+  lane: CorpusLane;
+  /** 영어 원문 — 학습자가 목표로 삼는 문장 (사람이 쓴 문장) */
+  en: string;
+  /** 한국어 문장. classic 레인은 빌드 시 비어 있고 앱에서 LLM 번역으로 채운다. */
+  ko: string | null;
+  /** 영어 힌트 단어 */
+  hints: string[];
+  difficulty: Difficulty;
+  /** 책 제목 등 출처 표시 */
+  source: string;
+  /** 출처 보충 (Project Gutenberg id, Tatoeba 문장 id 등) */
+  sourceId?: string;
+}
+
+export interface CorpusSourceInfo {
+  id: string;
+  title: string;
+  author: string;
+  count: number;
+}
+
+/** public/data/corpus/*.json 파일의 형태 */
+export interface CorpusFile {
+  lane: CorpusLane;
+  generatedAt: string;
+  license: string;
+  attribution: string;
+  sources: CorpusSourceInfo[];
+  entries: CorpusEntry[];
+}

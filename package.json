@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "corpus": "node scripts/build-corpus.mts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# 코퍼스 원본 내려받기 캐시
+/.corpus-cache/
