@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFrequency,
+  computeGradeCutoffs,
   difficultyParts,
   entryKey,
   gradeDifficulty,
@@ -229,6 +230,42 @@ describe("난이도", () => {
     const parts = difficultyParts(plain, stats);
     expect(parts.wordCount).toBe(10);
     expect(gradeDifficulty(plain, stats)).toBe("normal");
+  });
+
+  it("백분위 기준선을 쓰면 코퍼스 안에서 상대적으로 나뉜다", () => {
+    // 짧은 30문장 + 길고 희귀 어휘가 많은 30문장
+    const sentences: string[] = [];
+    for (let i = 1; i <= 30; i++)
+      sentences.push(`The cat sat on the mat and purred${i}.`);
+    for (let i = 1; i <= 30; i++)
+      sentences.push(
+        `The obstreperous porcupine endeavoured to penetrate the trellis, ` +
+          `while the gardener protested and the boy watched${i}.`,
+      );
+    const laneStats = buildFrequency(sentences);
+    laneStats.gradeCutoffs = computeGradeCutoffs(sentences, laneStats, {
+      easyRatio: 0.4,
+      hardRatio: 0.4,
+    });
+
+    const counts = { easy: 0, normal: 0, hard: 0 };
+    for (const s of sentences) counts[gradeDifficulty(s, laneStats)]++;
+
+    expect(gradeDifficulty(sentences[0], laneStats)).toBe("easy");
+    expect(gradeDifficulty(sentences[45], laneStats)).toBe("hard");
+    expect(counts.easy).toBeGreaterThan(0);
+    expect(counts.hard).toBeGreaterThan(0);
+  });
+
+  it("기준선이 무의미하면 절대 임계값으로 폴백한다", () => {
+    const fallback = { ...stats, gradeCutoffs: { easy: 50, hard: 10 } }; // hard ≤ easy → 무효
+    expect(gradeDifficulty("The cat sat on the mat.", fallback)).toBe("easy");
+    expect(
+      gradeDifficulty(
+        "The obstreperous porcupine endeavoured to penetrate the trellis.",
+        fallback,
+      ),
+    ).toBe("hard");
   });
 });
 

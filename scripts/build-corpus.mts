@@ -20,6 +20,7 @@ import type {
 } from "../src/lib/types.ts";
 import {
   buildFrequency,
+  computeGradeCutoffs,
   gradeDifficulty,
   isPracticeSentence,
   normalizeKey,
@@ -418,8 +419,7 @@ async function downloadAll(): Promise<void> {
   }
 }
 
-/** 난이도 비율을 맞춰 남은 문장을 고른다. */
-function shuffleWithSeed<T>(list: T[], seed: number): T[] {
+/** 난이도 비율을 맞춰 남은 문장을 고른다. */function shuffleWithSeed<T>(list: T[], seed: number): T[] {
   let a = seed >>> 0;
   const rand = () => {
     a = (a + 0x6d2b79f5) >>> 0;
@@ -437,9 +437,9 @@ function shuffleWithSeed<T>(list: T[], seed: number): T[] {
 
 /** 쉬움/보통/어려움 비율을 유지하며 cap개만 남긴다 (짧은 문장만 쌓이는 것 방지) */
 const RATIO: Record<string, number> = {
-  easy: 0.35,
+  easy: 0.3,
   normal: 0.45,
-  hard: 0.2,
+  hard: 0.25,
 };
 
 function balanceByDifficulty(
@@ -483,28 +483,44 @@ function summarize(entries: CorpusEntry[]): string {
   return `쉬움 ${by.easy} / 보통 ${by.normal} / 어려움 ${by.hard}`;
 }
 
+/**
+ * lane별로 어휘 빈도·백분위 기준선을 만들어 난이도와 힌트를 입힌다.
+ * LLM 없이 결정론적으로 동작한다.
+ */
+function applyDifficultyAndHints(
+  entries: CorpusEntry[],
+  easyRatio: number,
+  hardRatio: number,
+): void {
+  const sentences = entries.map((e) => e.en);
+  const stats = buildFrequency(sentences);
+  stats.gradeCutoffs = computeGradeCutoffs(sentences, stats, {
+    easyRatio,
+    hardRatio,
+  });
+  for (const e of entries) {
+    e.difficulty = gradeDifficulty(e.en, stats);
+    e.hints = pickHints(e.en, stats);
+  }
+}
+
 async function main(): Promise<void> {
   await downloadAll();
 
   const daily = LANES.includes("daily") ? buildDaily() : { entries: [], attribution: "" };
   const classic = LANES.includes("classic") ? buildClassic() : [];
 
-  // 코퍼스 전체 어휘 빈도로 난이도와 힌트를 정한다 (LLM 불필요, 결정론적)
-  const stats = buildFrequency([
-    ...daily.entries.map((e) => e.en),
-    ...classic.map((e) => e.en),
-  ]);
-  for (const e of [...daily.entries, ...classic]) {
-    e.difficulty = gradeDifficulty(e.en, stats);
-    e.hints = pickHints(e.en, stats);
-  }
+  // lane별로 어휘 빈도와 백분위 기준선을 만들어 난이도·힌트를 입힌다.
+  // (코퍼스 전체를 한 기준으로 보면 19세기 문체가 전부 어려움으로 몰린다)
+  applyDifficultyAndHints(daily.entries, 0.32, 0.28);
+  applyDifficultyAndHints(classic, 0.3, 0.3);
 
   const dailyEntries = balanceByDifficulty(daily.entries, DAILY_CAP, 20260101);
   const classicEntries = balanceByDifficulty(
     classic,
     CLASSIC_CAP,
     20260102,
-    { easy: 0.22, normal: 0.4, hard: 0.38 },
+    { easy: 0.3, normal: 0.4, hard: 0.3 },
   );
   if (daily.entries.length)
     console.log(`  (필터 통과 전체 ${daily.entries.length}: ${summarize(daily.entries)})`);

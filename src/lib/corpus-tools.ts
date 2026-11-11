@@ -205,6 +205,14 @@ export interface CorpusStats {
   freq: Map<string, number>;
   /** 코퍼스 크기가 바뀌어도 흔들리지 않도록 문장 수에 비례해 정한다 */
   coreThreshold: number;
+  /** lane 안 백분위로 정한 난이도 기준선 (없으면 GRADE_THRESHOLDS 절대값) */
+  gradeCutoffs?: GradeCutoffs;
+}
+
+/** 백분위 기반 난이도 기준선 (score ≤ easy → 쉬움, ≥ hard → 어려움) */
+export interface GradeCutoffs {
+  easy: number;
+  hard: number;
 }
 
 /** 어휘 빈도 지도를 만든다 (코퍼스 전체 영어 문장에서) */
@@ -249,6 +257,10 @@ export function difficultyParts(
 /**
  * 규칙 기반 난이도. (LLM 호출 없이 결정론적으로)
  * 어절 수 + 절 연결어 개수 + 희귀 어휘 비율을 합산해 나눈다.
+ *
+ * stats.gradeCutoffs가 있으면 lane 안 백분위로 판단한다.
+ * 절대값(GRADE_THRESHOLDS)만 쓰면 19세기 문체는 무조건 어려움이 되어
+ * classic lane의 71%가 hard로 몰렸다 (쉬움 필터가 114문장만 남는 문제).
  */
 export const GRADE_THRESHOLDS = {
   hardScore: 25,
@@ -259,11 +271,38 @@ export const GRADE_THRESHOLDS = {
   easyRare: 1,
 };
 
+/** 문장 점수 분포에서 쉬움/어려움 기준선을 백분위로 정한다. */
+export function computeGradeCutoffs(
+  sentences: string[],
+  stats: CorpusStats,
+  options: { easyRatio?: number; hardRatio?: number } = {},
+): GradeCutoffs {
+  const easyRatio = options.easyRatio ?? 0.3;
+  const hardRatio = options.hardRatio ?? 0.3;
+  const scores = sentences
+    .map((s) => difficultyParts(s, stats).score)
+    .sort((a, b) => a - b);
+  if (scores.length === 0) return { easy: 0, hard: 0 };
+  const at = (q: number): number => {
+    const i = Math.min(scores.length - 1, Math.max(0, Math.floor(scores.length * q)));
+    return scores[i];
+  };
+  return { easy: at(easyRatio), hard: at(1 - hardRatio) };
+}
+
 export function gradeDifficulty(
   sentence: string,
   stats: CorpusStats,
 ): Difficulty {
   const { wordCount, rare, clauses, score } = difficultyParts(sentence, stats);
+
+  const cutoffs = stats.gradeCutoffs;
+  if (cutoffs && cutoffs.hard > cutoffs.easy) {
+    if (score >= cutoffs.hard) return "hard";
+    if (score <= cutoffs.easy) return "easy";
+    return "normal";
+  }
+
   if (wordCount >= GRADE_THRESHOLDS.hardWords || rare >= GRADE_THRESHOLDS.hardRare || clauses >= 3 || score >= GRADE_THRESHOLDS.hardScore)
     return "hard";
   if (wordCount <= GRADE_THRESHOLDS.easyWords && rare <= GRADE_THRESHOLDS.easyRare && score <= GRADE_THRESHOLDS.easyScore)
