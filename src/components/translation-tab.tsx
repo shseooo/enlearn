@@ -27,7 +27,7 @@ import { entryKey, DIFFICULTY_SHORT } from "@/lib/corpus-tools";
 import { isSettingsComplete } from "@/lib/settings";
 import { useCancellable } from "@/lib/use-cancellable";
 import EvaluationCard from "./evaluation-card";
-import { SettingsWarning } from "./free-writing-tab";
+import SettingsWarning from "./settings-warning";
 
 /** 문장 출처: 코퍼스(사람이 쓴 문장) 또는 AI 생성 */
 type SourceMode = CorpusLane | "ai";
