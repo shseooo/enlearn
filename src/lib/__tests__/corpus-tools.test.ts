@@ -194,6 +194,90 @@ describe("isPracticeSentence", () => {
       true,
     );
   });
+
+  /*
+   * R8-5: 거부 갈래 여럿이 테스트에 한 번도 지나가지 않았다(커버리지 0회).
+   * 규칙이 한 줄로 늘어선 자리라 하나라도 지워지면 코퍼스 수록 내용이 조용히 바뀐다.
+   * 각 줄은 "그 갈래에서 처음으로 거부되는" 문장만 담는다 — 앞 갈래에서 걸리면
+   * 그 자리의 규칙은 검증되지 않는다.
+   */
+  it("거부 규칙마다 한 건씩 걸러낸다 (R8-5)", () => {
+    const rejects: Array<[string, string]> = [
+      ["빈 문장", ""],
+      ["첫 글자가 대문자가 아님", "he said hello and went home."],
+      ["문장부호로 끝나지 않음", "The old man and the long road and the cold wind"],
+      ["허용되지 않는 문자(비라틴 문자)", "The café on the corner was closed for good."],
+      ["콤마·세미콜론 과다", "Alice, Bob, Carol, Dave, and Eve walked home together."],
+      ['따옴표 과다', '"One "two "three four five six seven eight nine."'],
+      ["숫자 과다", "The year 1863 and 1864 were very hard on everyone."],
+      // hasVerb: resolved.md가 "난이도 판정이 아니라 수록 필터"로 결정한 바로 그 규칙.
+      ["동사 없는 나열(hasVerb 거부)", "The old man, the long road, the cold wind."],
+    ];
+    for (const [label, sentence] of rejects) {
+      expect({ label, accepted: isPracticeSentence(sentence) }).toEqual({
+        label,
+        accepted: false,
+      });
+    }
+  });
+
+  // R8-5: 잡음 필터의 근거 주석("소문자 조각 is·it으로 오검출되지 않는다")에 해당하는
+  // lowercase-numeral 갈래가 한 번도 실행되지 않았다.
+  it("소문자 로마숫자는 장 제목 잡음으로 보지 않는다 (R8-5)", () => {
+    expect(
+      isPracticeSentence("She read chapter iii twice and smiled at the window."),
+    ).toBe(true);
+  });
+
+  /*
+   * R8-5: 위의 표가 "앞 규칙"이 아니라 그 자리에서 거부하는지 확인하는 짝 테스트.
+   * 한 글자·한 단어만 바꾼 짝이 통과하면, 그 규칙이 실제로 경계에서 작동한다.
+   */
+  it("거부 규칙은 한 글자·한 단어 짝으로 경계가 갈린다 (R8-5)", () => {
+    const pairs: Array<[string, string, string]> = [
+      ["첫 글자", "He said hello and went home.", "he said hello and went home."],
+      [
+        "문장부호",
+        "The old man walked the long road and the cold wind blew.",
+        "The old man walked the long road and the cold wind blew",
+      ],
+      [
+        "비라틴 문자",
+        "The cafe on the corner was closed for good.",
+        "The café on the corner was closed for good.",
+      ],
+      [
+        "콤마 3개/4개",
+        "Alice, Bob, Carol, Dave and Eve walked home together.",
+        "Alice, Bob, Carol, Dave, and Eve walked home together.",
+      ],
+      [
+        "따옴표 2개/3개",
+        "She said \"hello there\" and waved twice.",
+        "She said \"hello there\" and \"waved twice.",
+      ],
+      [
+        "숫자 2개/8개",
+        "The year 1 and 2 were very hard on everyone.",
+        "The year 1863 and 1864 were very hard on everyone.",
+      ],
+      [
+        "동사 있음/없음(hasVerb)",
+        "The old man, the long road, the cold wind were company.",
+        "The old man, the long road, the cold wind.",
+      ],
+    ];
+    for (const [label, good, bad] of pairs) {
+      expect({ label, good: isPracticeSentence(good) }).toEqual({
+        label,
+        good: true,
+      });
+      expect({ label, bad: isPracticeSentence(bad) }).toEqual({
+        label,
+        bad: false,
+      });
+    }
+  });
 });
 
 describe("난이도", () => {

@@ -553,6 +553,11 @@ export function exportKoreanCache(): Record<string, CachedKorean> {
  * ISO 시각 문자열 두 개를 비교한다. normalizeSeenValue가 형식을 검사했지만
  * 시간대 표기(+09:00 / Z)가 다르면 문자열 비교가 어긋나므로 시각으로 비교한다.
  * 파싱되지 않는 값은 낡은 쪽으로 본다(살아남아야 할 최근 기록을 밀지 않게).
+ *
+ * ⚠️ "들어온 시각이 파싱되지 않는다" 갈래는 방어 코드다(R8-4) — 유일한 호출부(importSeen)
+ * 가 normalizeSeenValue로 형식 밖 시각을 "방금 본 시각"으로 바로잡아 보내므로, 현재
+ * 진입점으로 도달하지 않는다. 저장소에 이미 손상된 값이 있는 갈래(아래 두 번째 if)는
+ * 옛 버전이 쓴 값을 읽는 경로에서 실제로 돈다(corpus.test.ts의 R7-3 테스트).
  */
 function isNewerIso(candidate: string, existing: string): boolean {
   const a = Date.parse(candidate);
@@ -615,13 +620,16 @@ export function importSeen(value: unknown, replace = false): ImportResult {
     else incoming[k] = seenAt;
   }
   if (replace) {
-    safeSetItem(SEEN_KEY, JSON.stringify(trimSeen(incoming)));
+    const kept = trimSeen(incoming);
+    // 쓰기 실패 시 seenCount()는 "변하지 않은 이전 저장소"를 센다. 그 개수를 stored로
+    // 쓰면 trimmed가 음수가 된다(R8-1). 실패 사실은 writeFailed 플래그로 전달된다.
+    const written = safeSetItem(SEEN_KEY, JSON.stringify(kept));
     notifyProgressOnce();
-    const stored = seenCount();
+    const keptCount = Object.keys(kept).length;
     return {
-      stored,
+      stored: written ? keptCount : 0,
       rejected,
-      trimmed: Object.keys(incoming).length - stored,
+      trimmed: Object.keys(incoming).length - keptCount,
       merged: 0,
     };
   }
@@ -690,13 +698,15 @@ export function importKoreanCache(
     else rejected++;
   }
   if (replace) {
-    safeSetItem(KO_CACHE_KEY, JSON.stringify(trimKoreanCache(incoming)));
+    const kept = trimKoreanCache(incoming);
+    // 위와 같은 이유(R8-1): 쓰기가 실패하면 이전 캐시 개수가 "저장된 개수"로 보인다.
+    const written = safeSetItem(KO_CACHE_KEY, JSON.stringify(kept));
     notifyProgressOnce();
-    const stored = koreanCacheCount();
+    const keptCount = Object.keys(kept).length;
     return {
-      stored,
+      stored: written ? keptCount : 0,
       rejected,
-      trimmed: Object.keys(incoming).length - stored,
+      trimmed: Object.keys(incoming).length - keptCount,
       merged: 0,
     };
   }

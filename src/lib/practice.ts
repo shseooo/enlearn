@@ -819,6 +819,16 @@ function sortRecords(records: PracticeRecord[]): PracticeRecord[] {
 }
 
 /**
+ * SRS 항목끼리 "누가 이기나"(D2-1): lastReviewed가 더 최근인 값.
+ * null(아직 복습하지 않음)은 0으로 본다. 같은 시각이면 기존 값이 이긴다(`>`만 쓴다).
+ */
+function srsWins(candidate: SrsItem, existing: SrsItem): boolean {
+  const a = candidate.lastReviewed ? Date.parse(candidate.lastReviewed) : 0;
+  const b = existing.lastReviewed ? Date.parse(existing.lastReviewed) : 0;
+  return a > b;
+}
+
+/**
  * 연습 기록을 불러온다. 병합은 "누가 이기나"를 시각으로 정한다(D2-1):
  * 같은 id·날짜에서는 ts가 더 최근인 값이 남고, 시각이 같으면 기존 값이 남는다.
  * replace: 기존 기록을 모두 지운다(정렬 후 상한만큼 남긴다).
@@ -832,12 +842,27 @@ export function importLog(items: unknown[], replace = false): ImportResult {
     // 대체는 유효 항목이 0개여야 실제로 비워야 한다 (그렇지 않으면 "지웠다"가 거짓이 된다)
     // ⚠️ 파일에 적힌 순서로 자르면 내림차순 백업에서 가장 최근 기록이 먼저 버려진다(R6-7).
     //    병합 경로와 같은 키(date, ts)로 정렬한 뒤 뒤쪽(최신)만 남긴다.
-    const kept = sortRecords(incoming).slice(-MAX_RECORDS);
-    writeArray(LOG_KEY, kept);
-    // 개수 상한(MAX_RECORDS)으로 잘린 경우 요청 개수가 아니라 실제로 남은 개수를 알려준다.
-    const stored = loadLog().length;
-    // 대체는 기존 값과 비교하지 않으므로 "밀린 항목"은 없다.
-    return { stored, rejected, trimmed: incoming.length - stored, merged: 0 };
+    // ⚠️ 대체도 병합과 같은 키(id|date)로 접는다(R8-1). 두 백업을 이어붙인 파일은 같은
+    //    키를 두 번 담는다. 그대로 두면 같은 문장이 두 행으로 저장되어 통계가 이중
+    //    계산되고, logPractice의 findIndex가 첫 행만 고쳐 낡은 행이 계속 남는다.
+    const folded = new Map<string, PracticeRecord>();
+    for (const r of incoming) {
+      const key = `${r.id}|${r.date}`;
+      const existing = folded.get(key);
+      if (!existing || r.ts > existing.ts) folded.set(key, r);
+    }
+    const kept = sortRecords([...folded.values()]).slice(-MAX_RECORDS);
+    // 쓰기가 실패하면 loadLog()는 이전 저장소를 읽는다. 그 개수를 stored로 보여주면
+    // trimmed가 음수가 된다(R8-1). 실패 자체는 writeFailureCount/writeFailed로 전달된다.
+    const stored = writeArray(LOG_KEY, kept) ? kept.length : 0;
+    return {
+      stored,
+      rejected,
+      // 저장소 상한(MAX_RECORDS)으로 밀려난 개수 — 음수가 되지 않는다.
+      trimmed: folded.size - kept.length,
+      // 같은 파일 안에서 더 최근 사본에 밀린 중복 사본(병합 경로의 merged와 같은 뜻).
+      merged: incoming.length - folded.size,
+    };
   }
   if (!incoming.length) return { stored: 0, rejected, trimmed: 0, merged: 0 };
   const byIdDate = new Map<string, PracticeRecord>();
@@ -880,9 +905,21 @@ export function importSrs(items: unknown[], replace = false): ImportResult {
     .filter((x): x is SrsItem => x !== null);
   const rejected = items.length - incoming.length;
   if (replace) {
-    writeArray(SRS_KEY, trimSrs(incoming));
-    const stored = loadSrs().length;
-    return { stored, rejected, trimmed: incoming.length - stored, merged: 0 };
+    // 대체도 병합과 같은 키(id)로 접는다(R8-1). 중복이 남으면 gradeReview가 findIndex로
+    // 하나만 고치므로 나머지 하나는 due가 그대로 남아 복습 탭에서 계속 나온다.
+    const folded = new Map<string, SrsItem>();
+    for (const x of incoming) {
+      const existing = folded.get(x.id);
+      if (!existing || srsWins(x, existing)) folded.set(x.id, x);
+    }
+    const kept = trimSrs([...folded.values()]);
+    const stored = writeArray(SRS_KEY, kept) ? kept.length : 0;
+    return {
+      stored,
+      rejected,
+      trimmed: folded.size - kept.length,
+      merged: incoming.length - folded.size,
+    };
   }
   if (!incoming.length) return { stored: 0, rejected, trimmed: 0, merged: 0 };
   const byId = new Map<string, SrsItem>();
@@ -895,10 +932,7 @@ export function importSrs(items: unknown[], replace = false): ImportResult {
       won.add(x.id);
       continue;
     }
-    // null은 0으로 두고 비교한다(같은 시각이면 기존 값이 이긴다).
-    const incomingTime = x.lastReviewed ? Date.parse(x.lastReviewed) : 0;
-    const existingTime = existing.lastReviewed ? Date.parse(existing.lastReviewed) : 0;
-    if (incomingTime > existingTime) {
+    if (srsWins(x, existing)) {
       byId.set(x.id, x);
       won.add(x.id);
     }

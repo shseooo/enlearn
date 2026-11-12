@@ -100,10 +100,11 @@ describe("watchOtherTabs", () => {
   /*
    * R7-4: leave는 정상 종료만 알린다. 크래시·강제 종료로 leave가 없으면
    * 배너 개수가 영구히 낡아 "없는 탭을 세는" 상태가 남는다.
+   * ⚠️ peer 유예(peerTtlMs)는 heartbeat와 분리됐으므로(R8-3) 테스트에서도 따로 준다.
    */
   it("leave 없이 peer 채널만 닫아도 TTL 뒤에 개수가 0으로 돌아온다 (R7-4)", async () => {
     const onChange = vi.fn();
-    const stop = watchOtherTabs(onChange, { heartbeatMs: 20 });
+    const stop = watchOtherTabs(onChange, { heartbeatMs: 20, peerTtlMs: 40 });
     try {
       const other = peer();
       other.postMessage({ type: "join", id: "peer-crash" });
@@ -115,6 +116,59 @@ describe("watchOtherTabs", () => {
       expect(onChange).toHaveBeenLastCalledWith(0);
     } finally {
       stop();
+    }
+  });
+
+  /*
+   * R8-3: peer TTL을 heartbeat 두 배로 두면, 배경 탭의 스로틀링된 heartbeat(최소 1분)
+   * 보다 먼저 peer가 사라져 배너가 **꺼진다**. 경고가 꺼지는 방향은 켜지는 방향보다
+   * 위험하므로 기본 유예를 주기보다 훨씬 길게 잡는다.
+   */
+  it("heartbeat 네 주기만큼 소식이 없어도 peer를 놓지 않는다 (R8-3)", async () => {
+    const onChange = vi.fn();
+    // heartbeat 20ms, 유예는 기본값(max(40ms, 120_000ms)) — 실제 브라우저의
+    // "주기가 늦게 도착하는" 상황을 흉내낸다.
+    const stop = watchOtherTabs(onChange, { heartbeatMs: 20 });
+    try {
+      const other = peer();
+      other.postMessage({ type: "join", id: "peer-throttled" });
+      await settle();
+      expect(onChange).toHaveBeenLastCalledWith(1);
+
+      onChange.mockClear();
+      // 이전 TTL(heartbeat × 2 = 40ms)이라면 여기서 peer가 사라졌을 것이다.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      other.postMessage({ type: "here", id: "peer-throttled" }); // 늦게 도착한 heartbeat
+      await settle();
+      expect(onChange).not.toHaveBeenCalledWith(0);
+    } finally {
+      stop();
+    }
+  });
+
+  // R8-3: visibilitychange는 timer 스로틀링을 받지 않는다 — peer 관측 시각을 갱신한다.
+  it("visibilitychange가 peer를 계속 보이게 한다 (R8-3)", async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    // heartbeat를 아주 길게 두면 재공지 경로는 visibilitychange만 남는다.
+    const stopFirst = watchOtherTabs(first, { heartbeatMs: 100_000, peerTtlMs: 120 });
+    const stopSecond = watchOtherTabs(second, { heartbeatMs: 100_000, peerTtlMs: 120 });
+    try {
+      await settle();
+      expect(first).toHaveBeenLastCalledWith(1);
+      expect(second).toHaveBeenLastCalledWith(1);
+
+      // visibilitychange는 100ms 간격으로 보내는 동안 peer는 살아 있어야 한다.
+      for (let i = 0; i < 4; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        document.dispatchEvent(new Event("visibilitychange"));
+        await settle();
+      }
+      expect(first).toHaveBeenLastCalledWith(1);
+      expect(second).toHaveBeenLastCalledWith(1);
+    } finally {
+      stopFirst();
+      stopSecond();
     }
   });
 

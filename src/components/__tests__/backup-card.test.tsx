@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import BackupCard from "../backup-card";
 import StorageWarning from "../storage-warning";
 import { loadLog, logPractice, MAX_RECORDS } from "@/lib/practice";
+import { cacheKorean, getCachedKorean, markSeen, seenCount } from "@/lib/corpus";
 import { saveSettings } from "@/lib/settings";
 import { BACKUP_APP, buildBackup } from "@/lib/backup";
 
@@ -146,6 +147,77 @@ describe("BackupCard", () => {
     const log = loadLog();
     expect(log).toHaveLength(1);
     expect(log[0].en).toBe("Sentence coming from a backup file.");
+  });
+
+  /*
+   * R8-2: 확인 문구가 실제로 지우는 네 저장소 중 받은 문장 기록(seen, 상한 2만 건)을
+   * 빠뜨렸다. 백업에 seen 섹션이 없으면 parseBackup이 {}로 채우므로, 문구를 읽은
+   * 사용자는 "기록은 남는 줄 알고" 그 기록을 잃는다(D1-1의 되돌릴 수 없음 고지).
+   * D8-1(백업에 없는 섹션의 의미)이 정해질 때까지 현행 동작도 함께 고정한다.
+   */
+  it("대체 확인 문구는 지워지는 저장소를 모두 적고, seen 없는 백업은 seen을 빈 값으로 대체한다 (R8-2)", async () => {
+    markSeen("classic:seen:one");
+    markSeen("classic:seen:two");
+    expect(seenCount()).toBe(2);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<BackupCard />);
+    const user = userEvent.setup();
+    await user.upload(screen.getByLabelText(/백업 가져오기/), fileOf(VALID));
+    await user.click(
+      screen.getByRole("button", { name: /기존 기록을 지우고 대체/ }),
+    );
+    await screen.findByText(/기존 기록을 대체했습니다/);
+
+    const asked = String(confirmSpy.mock.calls[0]?.[0] ?? "");
+    expect(asked).toMatch(/받은 문장/);
+    expect(asked).toMatch(/되돌릴 수 없습니다/);
+    // VALID의 seen 섹션은 빈 객체({}) — 지금은 그것까지 포함해 대체한다.
+    expect(seenCount()).toBe(0);
+  });
+
+  /*
+   * R8-6: 번역 캐시에는 시각 비교가 없다(기존 값 우선 — D2-1). "더 최근 기록이 있어
+   * 적용되지 않음"은 사용자에게 "내 백업이 옛것이어서 거부됐다"는 거짓 설명이고,
+   * 실제로는 어떤 번역도 백업의 것으로 바꿀 수 없다는 사실을 감춘다.
+   */
+  it("번역 캐시가 겹치는 합치기는 '더 최근'이 아니라 '이미 저장된 값'이라고 말한다 (R8-6)", async () => {
+    cacheKorean("classic:overlap:key", "화면에 이미 있는 번역.", ["old"]);
+    const backup = JSON.stringify({
+      app: BACKUP_APP,
+      version: 1,
+      exportedAt: "2026-01-02T00:00:00.000Z",
+      counts: { log: 1, srs: 0, seen: 0, koreanCache: 1 },
+      data: {
+        log: [
+          {
+            date: "2026-01-02",
+            lane: "classic",
+            en: "Fresh record for the cache wording test.",
+            ko: "번역 캐시 문구 테스트용 기록.",
+            answer: "answer",
+            score: 80,
+            corrections: [],
+          },
+        ],
+        srs: [],
+        seen: {},
+        koreanCache: {
+          "classic:overlap:key": { ko: "백업에 있던 번역.", hints: ["backup"] },
+        },
+      },
+    });
+
+    render(<BackupCard />);
+    const user = userEvent.setup();
+    await user.upload(screen.getByLabelText(/백업 가져오기/), fileOf(backup));
+    await user.click(screen.getByRole("button", { name: /지금 기록에 합치기/ }));
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent(/1건은 이미 저장된 값이 있어 적용되지 않음/);
+    expect(status.textContent).not.toMatch(/더 최근/);
+    // 실제로는 기존 번역이 그대로 남는다 — 백업의 번역은 어디로도 반영되지 않는다.
+    expect(getCachedKorean("classic:overlap:key")?.ko).toBe("화면에 이미 있는 번역.");
   });
 
   it("취소하면 아무것도 바뀌지 않는다", async () => {

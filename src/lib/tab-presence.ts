@@ -25,12 +25,26 @@ function isPresenceMessage(value: unknown): value is PresenceMessage {
 
 let nextId = 0;
 
-/** 재공지 주기(ms). 두 주이상 소식이 없는 peer는 사라진 것으로 본다(R7-4). */
+/** 재공지 주기(ms). 이 주기로 "here"를 보낸다(R7-4). */
 export const TAB_HEARTBEAT_MS = 15_000;
+
+/**
+ * peer를 살아있다고 보는 기간 하한(R8-3).
+ *
+ * ⚠️ heartbeat는 setInterval 한 갈래라 브라우저가 배경 탭에서 심하게 늦어진다
+ * (숨긴 탭의 타이머는 1분 이하로 스로틀링되고 Page Lifecycle의 frozen 상태는 정지).
+ * TTL을 주기의 두 배로 두면 숨긴 지 30초 지난 탭이 peer에서 사라져 배너가 **꺼진다**
+ * — 실제로는 두 탭이 여전히 같은 저장소를 read-merge-write로 덮어쓰는 중이다.
+ * 경고가 꺼지는 방향이 켜지는 방향보다 위험하므로(R7-4 주석), 관측 유예를 주기보다
+ * 충분히 길게 잡는다. 정상 종료는 pagehide→leave가 즉시 알리므로 유예를 기다리지 않는다.
+ */
+export const TAB_PEER_TTL_MS = 120_000;
 
 /** 테스트 등으로 주기를 조정할 수 있는 선택지 */
 export interface WatchOptions {
   heartbeatMs?: number;
+  /** peer 유예 기간 하한(ms). 기본은 max(heartbeatMs * 2, TAB_PEER_TTL_MS) */
+  peerTtlMs?: number;
 }
 
 /**
@@ -45,6 +59,8 @@ export function watchOtherTabs(
     return () => {};
   }
   const heartbeatMs = options.heartbeatMs ?? TAB_HEARTBEAT_MS;
+  // 유예 기간은 heartbeat 주기에서 분리한다(R8-3): 배경 탭의 heartbeat는 늦게 도착한다.
+  const peerTtlMs = options.peerTtlMs ?? Math.max(heartbeatMs * 2, TAB_PEER_TTL_MS);
   // 같은 탭의 자기 메시지는 무시하지만, id가 겹치면 다른 탭을 놓친다.
   // randomUUID가 없는 환경에서도 유일하도록 난수 + 증가 번호를 함께 쓴다.
   const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${++nextId}`;
@@ -78,11 +94,17 @@ export function watchOtherTabs(
   // 탭은 pageshow로 돌아오므로 다시 이름을 알린다(R7-4). 재공지와 TTL이 없으면
   // 배너 개수가 영구히 낡아 "낡은 사실"을 알려준다 — 경고가 꺼지는 방향은 특히 위험하다.
   const announceJoin = (): void => post("join");
+  // 화면이 가리거나(bfcache·탭 전환) 다시 보이는 visibilitychange는 timer 스로틀링을
+  // 받지 않으므로, heartbeat를 기다리지 않고 관측 시각을 갱신한다(R8-3).
+  // 숨길 때 한 번도 보내면 그 시점부터 유예 기간이 늘어난다.
+  const reannounce = (): void => post("here");
+  const doc = typeof document === "undefined" ? null : document;
   window.addEventListener("pagehide", announceLeave);
   window.addEventListener("pageshow", announceJoin);
+  doc?.addEventListener("visibilitychange", reannounce);
   const beat = window.setInterval(() => {
     post("here");
-    const cutoff = Date.now() - heartbeatMs * 2;
+    const cutoff = Date.now() - peerTtlMs;
     let dropped = false;
     for (const [peerId, seenAt] of peers) {
       if (seenAt < cutoff) {
@@ -100,6 +122,7 @@ export function watchOtherTabs(
     window.clearInterval(beat);
     window.removeEventListener("pagehide", announceLeave);
     window.removeEventListener("pageshow", announceJoin);
+    doc?.removeEventListener("visibilitychange", reannounce);
     announceLeave();
     channel.close();
   };

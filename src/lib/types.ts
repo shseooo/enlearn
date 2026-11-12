@@ -95,7 +95,8 @@ export interface CorpusFile {
  * ⚠️ stored는 "받아들여진 개수"다(R7-1). 키가 저장소에 있다는 사실만 세면
  * 병합에서 기존 값(더 최근)이 이겨 아무것도 적용되지 않은 항목까지 합친 것처럼
  * 보이고, 같은 키 중복까지 "상한으로 잘림"으로 보인다. 네 값은 이렇게 나눈다:
- *   stored + merged + trimmed + rejected = 들어온 항목 수 (replace는 merged 0)
+ *   stored + merged + trimmed + rejected = 들어온 항목 수
+ *   (대체도 같은 키 중복을 접으므로 merged가 0이 아닐 수 있다 — R8-1)
  */
 export interface ImportResult {
   /** 들어온 값이 실제로 저장소에 반영된 항목 수 */
@@ -104,6 +105,6 @@ export interface ImportResult {
   rejected: number;
   /** 저장소 상한(MAX_RECORDS · MAX_SEEN · MAX_SRS · MAX_KOREAN_CACHE)으로 잘린 항목 수 */
   trimmed: number;
-  /** 합치기에서 기존 값(더 최근)이 이겨 적용되지 않은 항목 수(D2-1/R7-1) */
+  /** 합치기에서 기존 값(더 최근)이 이겨 적용되지 않은 항목 수 + 같은 파일 안에서 밀린 중복 사본(D2-1/R7-1/R8-1) */
   merged: number;
 }

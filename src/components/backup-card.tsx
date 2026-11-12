@@ -108,7 +108,9 @@ export default function BackupCard() {
         `번역 캐시 ${result.koreanCache}개`,
         result.settingsRestored ? "연결 설정" : null,
         trimmed > 0 ? `${trimmed}건은 저장소 상한으로 제외` : null,
-        notApplied > 0 ? `${notApplied}건은 더 최근 기록이 있어 적용되지 않음` : null,
+        // R8-6: "더 최근 기록이 있어"는 번역 캐시에는 맞지 않는다(kocache는 시각 정보가
+        // 없어 기존 값 우선 — D2-1). 네 저장소에 모두 참인 말로 쓴다.
+        notApplied > 0 ? `${notApplied}건은 이미 저장된 값이 있어 적용되지 않음` : null,
         rejected > 0 ? `${rejected}건은 형식이 맞지 않아 제외` : null,
       ]
         .filter(Boolean)
@@ -204,7 +206,11 @@ export default function BackupCard() {
               onClick={() => {
                 if (
                   window.confirm(
-                    "기존 연습 기록·복습 큐·번역 캐시를 지우고 백업 내용으로 대체합니다. 계속할까요?",
+                    // R8-2: 실제로 지우는 네 저장소를 모두 적는다. 받은 문장 기록(seen)은
+                    // 백업에 섹션이 없으면 빈 값으로 대체되어 사라지는데, 문구가 빠지면
+                    // "기록은 남는 줄 알고" 2만 건을 잃는다(D1-1의 "되돌릴 수 없음" 고지).
+                    "기존 연습 기록·복습 큐·받은 문장 기록·한국어 번역 캐시를 지우고 " +
+                      "백업 내용으로 대체합니다. 되돌릴 수 없습니다 — 먼저 백업을 내보내세요. 계속할까요?",
                   )
                 ) {
                   handleRestore(true);

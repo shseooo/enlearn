@@ -837,6 +837,26 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     expect(Math.abs(Date.parse(value) - Date.now())).toBeLessThan(60_000);
   });
 
+  /*
+   * R8-4: isNewerIso의 "들어온 시각이 파싱되지 않는다" 갈래는 방어 코드다(커버리지 0회).
+   * 그 값을 비교에 넘기는 일은 없어야 한다는 사실을 합치기 경로에서 고정한다.
+   */
+  it("합치기도 비교에 앞서 형식 밖의 본 시각을 바로잡는다 (R8-4)", () => {
+    importSeen({ "classic:guard:k": "2026-06-01T00:00:00.000Z" }, true);
+
+    // replace가 아니라 병합 경로 — 정규화된 값이 아니면 isNewerIso에 도착한다.
+    const result = importSeen({ "classic:guard:k": "asdf", "classic:bad:type": 42 });
+    const seen = loadSeen();
+    // 원본 문자열은 어디에도 들어가지 않는다.
+    expect(seen["classic:guard:k"]).not.toBe("asdf");
+    expect(Number.isFinite(Date.parse(seen["classic:guard:k"]))).toBe(true);
+    expect(Math.abs(Date.parse(seen["classic:guard:k"]) - Date.now())).toBeLessThan(60_000);
+    // 문자열이 아닌 값은 항목 자체를 버린다.
+    expect(seen["classic:bad:type"]).toBeUndefined();
+    expect(result.rejected).toBe(1);
+    expect(result.stored).toBe(1);
+  });
+
   // R7-2: 합치기 판정은 Date.parse로 하는데 상한 트림은 문자열 순서로 버리면,
   // 시간대 표기가 다른 저장소에서 살아남아야 할 최근 기록이 먼저 밀려난다.
   it("seen 상한 트림은 시간대 표기와 무관하게 실제 시각으로 버린다 (R7-2)", () => {
@@ -886,6 +906,39 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     const trimmedResult = importKoreanCache(bulk, true);
     expect(trimmedResult.stored).toBe(MAX_KOREAN_CACHE);
     expect(trimmedResult.trimmed).toBe(50);
+  });
+
+  /*
+   * R8-1: 쓰기 실패 시 저장소에 남은 이전 개수를 stored로 세면, 대체 항목이 그보다
+   * 적을 때 trimmed가 음수가 된다. (되돌릴지 여부는 D6-3 — 여기서는 개수만 고정한다.)
+   */
+  it("대체 중 저장이 실패해도 본 문장·번역 캐시 개수가 음수가 아니다 (R8-1)", () => {
+    const five: Record<string, string> = {};
+    for (let i = 0; i < 5; i++) five[`classic:${i}:k`] = `2026-06-0${i + 1}T00:00:00.000Z`;
+    importSeen(five, true);
+    expect(seenCount()).toBe(5);
+    for (let i = 0; i < 5; i++) cacheKorean(`classic:${i}:t`, `이전에 저장된 번역 ${i}번.`, ["old"]);
+    expect(koreanCacheCount()).toBe(5);
+
+    const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError", "QuotaExceededError");
+    });
+    try {
+      const seen = importSeen({ "classic:new:k": "2026-06-09T00:00:00.000Z" }, true);
+      expect(seen.stored).toBe(0);
+      expect(seen.trimmed).toBe(0);
+      expect(seen.rejected).toBe(0);
+
+      const ko = importKoreanCache(
+        { "classic:new:t": { ko: "새 번역입니다.", hints: ["new"] } },
+        true,
+      );
+      expect(ko.stored).toBe(0);
+      expect(ko.trimmed).toBe(0);
+      expect(ko.rejected).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("저장이 실패하면 다음 읽기도 저장소의 이전 값을 본다 (파싱 캐시)", () => {

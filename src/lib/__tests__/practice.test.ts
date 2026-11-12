@@ -191,27 +191,30 @@ describe("간격반복(SRS)", () => {
   });
 
   // R7-11: 아래 테스트는 큐에 항목이 하나일 때만 nextReviewDate를 불러,
-  // "가장 가까운 날짜"를 고르는 정렬이 한 번도 돈 적 없었다.
-  it("다음 복습 예정일은 큐에서 가장 가까운 날짜를 고른다 (R7-11)", () => {
-    // 먼 날짜를 먼저 넣고 가까운 날짜를 나중에 넣는다 — 삽입 순서가 아니라 날짜 순서여야 한다.
+  // "가장 가까운 날짜"를 고르는 정렬이 한 번도 돈 적 없었다(R8-4).
+  it("다음 복습 예정일은 큐에서 가장 가까운 날짜를 고른다 (R7-11/R8-4)", () => {
+    // 미래 항목을 두 개 만들되 삽입 순서를 날짜 순서의 역으로 둔다.
+    // 항목이 하나면 sort의 비교함수가 불리지도 않는다.
     addForReview({
       id: "classic:far",
       lane: "classic",
       en: "A sentence reviewed far away.",
       ko: "먼저 복습하는 문장.",
       now: day(-30),
-    }); // due = 30일 전 + 1일 = 어제보다 앞 — 이미 대기 중이다
-    gradeReview("classic:far", "knows"); // stage 1 → 3일 뒤로 밀린다
+    });
+    gradeReview("classic:far", "knows"); // stage 1
+    gradeReview("classic:far", "knows"); // stage 2 → due = 7일 뒤
     addForReview({
       id: "classic:near",
       lane: "classic",
       en: "A sentence reviewed soon.",
       ko: "가까이에서 복습하는 문장.",
-      now: day(-1),
-    }); // stage 0 → 0일(어제)이 due
+      now: day(-30),
+    });
+    gradeReview("classic:near", "knows"); // stage 1 → due = 3일 뒤 (먼저 넣은 항목보다 가깝다)
 
-    expect(dueCount()).toBe(1);
-    // 아직 나오지 않는 문장 중 가장 가까운 날짜가 "다음 복습"이다.
+    // 두 항목 모두 아직 나오지 않는다.
+    expect(dueCount()).toBe(0);
     expect(nextReviewDate()).toBe(addDays(today, REVIEW_INTERVALS[1]));
   });
 
@@ -1048,6 +1051,113 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     expect(practiceStats().total).toBe(1);
     expect(importLog([], true).stored).toBe(0);
     expect(practiceStats().total).toBe(0);
+  });
+
+  /*
+   * R8-1: 대체 경로는 키 중복을 접지 않았다. 두 백업의 log 배열을 이어붙인 파일은
+   * 같은 id·날짜를 두 번 담고, 두 행이 전부 저장되어 통계가 이중 계산되었다.
+   */
+  it("대체(replace)도 같은 id·날짜 중복을 ts 최신 한 행으로 접는다 (R8-1)", () => {
+    const en = "Duplicated across two merged backups.";
+    const id = practiceId("classic", en);
+    const dup = (answer: string, ts: number, score: number) => ({
+      id,
+      date: today,
+      ts,
+      lane: "classic",
+      en,
+      ko: "두 백업을 이어붙인 파일의 중복 문장.",
+      answer,
+      score,
+    });
+    const result = importLog(
+      [dup("stale", 1_700_000_000_000, 20), dup("latest", 1_700_000_000_001, 90)],
+      true,
+    );
+    expect(loadLog()).toHaveLength(1);
+    expect(result.stored).toBe(1);
+    expect(result.trimmed).toBe(0); // 상한과 무관하다
+    expect(result.merged).toBe(1); // 밀린 사본은 "적용되지 않음"이다
+    // 한 번의 연습이 두 번 계산되지 않는다.
+    expect(practiceStats().total).toBe(1);
+    expect(practiceStats().avgScore).toBe(90);
+    // 다시 같은 문장을 풀면 유일한 행이 갱신된다(낡은 사본이 집계에 남지 않는다).
+    logPractice(record({ en, ko: "두 백업을 이어붙인 파일의 중복 문장.", answer: "third", score: 55 }));
+    expect(loadLog()).toHaveLength(1);
+    expect(loadLog()[0].answer).toBe("third");
+  });
+
+  it("대체(replace)는 같은 id의 복습 큐 항목도 하나로 접는다 (R8-1)", () => {
+    const item = (stage: number, due: string, lastReviewed: string | null) => ({
+      id: "classic:dupq",
+      lane: "classic",
+      en: "Duplicated queue entry.",
+      ko: "중복된 복습 큐 항목.",
+      stage,
+      due,
+      lapses: 0,
+      lastReviewed,
+    });
+    const result = importSrs(
+      [item(0, "2026-01-02", null), item(3, "2026-03-04", today)],
+      true,
+    );
+    expect(reviewItems()).toHaveLength(1);
+    // 병합과 같은 규칙: lastReviewed가 더 최근인 사본이 남는다.
+    expect(reviewItems()[0].stage).toBe(3);
+    expect(result.stored).toBe(1);
+    expect(result.trimmed).toBe(0);
+    expect(result.merged).toBe(1);
+    // 중복이 남았다면 gradeReview가 하나만 고쳐 둘째가 계속 복습 탭에 남는다.
+    gradeReview("classic:dupq", "forgot");
+    expect(dueCount()).toBe(0);
+  });
+
+  // R8-1/D6-3: 쓰기가 실패하면 loadLog()는 이전 저장소를 읽는다.
+  // 그 개수를 stored로 쓰면(대체 항목이 더 적을 때) trimmed가 음수가 된다.
+  it("대체 중 저장이 실패해도 개수를 음수가 아니라 0으로 알려준다 (R8-1)", () => {
+    const storedFive = Array.from({ length: 5 }, (_, i) => ({
+      id: `before-${i}`,
+      date: today,
+      ts: 1_700_000_000_000 + i,
+      lane: "classic",
+      en: `Sentence stored before the failed replace ${i}.`,
+      answer: "x",
+      score: 50,
+    }));
+    importLog(storedFive, true);
+    expect(loadLog()).toHaveLength(5);
+
+    const spy = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new DOMException("QuotaExceededError", "QuotaExceededError");
+      });
+    try {
+      const log = importLog(storedFive.slice(0, 2), true);
+      expect(log.stored).toBe(0);
+      expect(log.trimmed).toBe(0);
+      expect(log.merged).toBe(0);
+      const srs = importSrs(
+        [
+          {
+            id: "classic:f1",
+            lane: "classic",
+            en: "Queue entry for a failed write.",
+            ko: "쓰기가 실패한 큐 항목.",
+            stage: 0,
+            due: addDays(today, 1),
+            lapses: 0,
+            lastReviewed: null,
+          },
+        ],
+        true,
+      );
+      expect(srs.stored).toBe(0);
+      expect(srs.trimmed).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("복습 큐는 상한을 넘지 않고, 진척도가 낮은 항목부터 밀려난다", () => {
