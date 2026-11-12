@@ -213,6 +213,7 @@ export function parseBackup(text: string): RawBackupFile {
 }
 
 export interface RestoreResult {
+  /** 저장소에 실제로 반영된 항목 수(합치기에서 기존 값이 이긴 항목은 여기에 들지 않는다 — R7-1) */
   log: number;
   srs: number;
   seen: number;
@@ -221,6 +222,8 @@ export interface RestoreResult {
   rejected: BackupCounts;
   /** 저장소 상한(MAX_RECORDS · MAX_SEEN · MAX_SRS · MAX_KOREAN_CACHE)으로 잘린 항목 수(D4-2). */
   trimmed: BackupCounts;
+  /** 합치기에서 기존 값(더 최근)이 이겨 적용되지 않은 항목 수(R7-1). */
+  merged: BackupCounts;
   settingsRestored: boolean;
   /**
    * 반영 중에 저장이 실패한 저장소가 있다(용량 초과 등). 이 경우 위의 개수는
@@ -275,6 +278,12 @@ export function restoreBackup(
       srs: imported.srs.trimmed,
       seen: imported.seen.trimmed,
       koreanCache: imported.koreanCache.trimmed,
+    },
+    merged: {
+      log: imported.log.merged,
+      srs: imported.srs.merged,
+      seen: imported.seen.merged,
+      koreanCache: imported.koreanCache.merged,
     },
     settingsRestored: false,
     writeFailed: false,

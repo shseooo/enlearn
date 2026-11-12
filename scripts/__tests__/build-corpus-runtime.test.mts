@@ -66,7 +66,7 @@ describe("cachedBytes — 내려받은 원본도 완성본 검사 (R6-8)", () =>
       cachedBytes("pg-truncated.txt", ["https://example.test/pg11"], isCompleteGutenbergText),
     ).rejects.toThrow(/완성본이 아닙니다/);
 
-    // 잘린 바이트가 캐시에 남으면 다음 빌드가それを 완성본으로 쓴다.
+    // 잘린 바이트가 캐시에 남으면 다음 빌드가 그 파일을 완성본으로 쓴다.
     expect(existsSync(join(BOOK_CACHE_DIR, "pg-truncated.txt"))).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

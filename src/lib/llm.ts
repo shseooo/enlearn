@@ -142,7 +142,12 @@ function isAbortError(e: unknown): boolean {
   return (e as Error | undefined)?.name === "AbortError";
 }
 
-/** AbortSignal.any가 없는 환경(jsdom 등)에서도 동작하는 신호 합치기 */
+/**
+ * AbortSignal.any가 없는 환경용 신호 합치기(R7-10).
+ * ⚠️ 주석의 근거로 "jsdom"을 적어 두었지만 jsdom·Node에는 AbortSignal.any가 있다.
+ * 그래서 이 폴백은 실제 브라우저(구버전 Safari 등)에서만 도는 코드였고 테스트로
+ * 싣지 못했다 — llm.test.ts가 AbortSignal.any를 지우고 일부러 이 경로를 탄다.
+ */
 function anySignal(signals: AbortSignal[]): AbortSignal {
   if (typeof AbortSignal.any === "function") return AbortSignal.any(signals);
   const controller = new AbortController();

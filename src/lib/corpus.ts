@@ -19,6 +19,27 @@ const SEEN_KEY = "enlearn.seen.v3";
 const KO_CACHE_KEY = "enlearn.kocache.v3";
 
 /**
+ * 다시는 읽히지 않는 옛 키(R7-8).
+ *
+ * 마이그레이션은 하지 않지만, 죽은 값까지 남기면 그대로 용량을 먹는다.
+ * seen 20,000건 ≈ 0.9MB + 번역 캐시 4,000건 ≈ 0.4MB ≈ 1.3MB가 그 예다. 사용자는
+ * "저장 공간이 가득 찼습니다" 안내를 보고 기록을 정리해도 그 실패가 왜 안 풀리는지 알 수 없다.
+ */
+const LEGACY_KEYS = ["enlearn.seen.v2", "enlearn.kocache.v2"];
+
+/** 죽은 옛 키를 지운다(값을 옮기지 않는다). 실패해도 무시한다 — 화면 기능과 무관하다. */
+export function clearLegacyStorageKeys(): void {
+  if (typeof window === "undefined") return;
+  for (const key of LEGACY_KEYS) {
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      // 삭제할 수 없어도 사용자에게 알릴 일은 아니다(저장 기능 자체는 그대로 돈다).
+    }
+  }
+}
+
+/**
  * 저장소 상한. 이 값들을 넘기면 브라우저 용량(보통 5MB)을 건드릴 수 있고,
  * 그 경우 setItem이 던지는 예외가 클릭 핸들러까지 번진다.
  */
@@ -29,8 +50,22 @@ export const MAX_KOREAN_CACHE = 4_000;
 function trimSeen(seen: SeenMap): SeenMap {
   const entries = Object.entries(seen);
   if (entries.length <= MAX_SEEN) return seen;
+  // ⚠️ 값 문자열 순서로 비교하면 시간대 표기(+09:00 / Z)가 다른 순간
+  // "사전순이 늦은" 값이 최근으로 오해되어 살아남고 진짜 최근 기록이 밀려난다(R7-2).
+  // 합치기 판정(isNewerIso)과 같은 기준 — 파싱된 시각 — 을 쓴다.
+  const timeOf = (value: unknown): number => {
+    const t = typeof value === "string" ? Date.parse(value) : Number.NaN;
+    return Number.isFinite(t) ? t : Number.NEGATIVE_INFINITY;
+  };
   return Object.fromEntries(
-    entries.sort((a, b) => String(b[1]).localeCompare(String(a[1]))).slice(0, MAX_SEEN),
+    entries
+      .sort((a, b) => {
+        const ta = timeOf(a[1]);
+        const tb = timeOf(b[1]);
+        if (ta === tb) return 0;
+        return ta < tb ? 1 : -1; // 최근이 앞으로
+      })
+      .slice(0, MAX_SEEN),
   );
 }
 
@@ -528,9 +563,11 @@ function isNewerIso(candidate: string, existing: string): boolean {
 }
 
 /**
- * seen의 값은 "본 시각"이다. trimSeen이 그 문자열 순서로 오래된 항목부터 버리기
+ * seen의 값은 "본 시각"이다. trimSeen이 그 시각 순서로 오래된 항목부터 버리기
  * 때문에, 형식 밖의 값("asdf" 같은)이 섞이면 살아남아야 할 최근 문장이 먼저 밀려난다.
  * 다른 저장소(log/srs/번역 캐시)는 값을 검사하므로 seen만 예외였다(리뷰 3-6).
+ * ⚠️ 비교는 문자열이 아니라 Date.parse로 한다(R7-2) — 시간대 표기가 다르면
+ * 사전순과 시각순이 어긋난다.
  */
 const SEEN_DATE_PREFIX = /^\d{4}-\d{2}-\d{2}T/;
 const MAX_SEEN_DATE_CHARS = 40;
@@ -560,7 +597,8 @@ function normalizeSeenValue(value: unknown, nowIso: string): string | null {
 /** 받은 문장 기록을 합친다(기본) 또는 대체한다. 잘못된 항목은 걸러낸다.
  * 합치기는 같은 키에서 더 최근 시각이 이긴다(D2-1). 시각이 같으면 기존 값이 남는다. */
 export function importSeen(value: unknown, replace = false): ImportResult {
-  if (typeof window === "undefined") return { stored: 0, rejected: 0, trimmed: 0 };
+  if (typeof window === "undefined")
+    return { stored: 0, rejected: 0, trimmed: 0, merged: 0 };
   const nowIso = new Date().toISOString();
   const incoming: SeenMap = {};
   let rejected = 0;
@@ -580,20 +618,35 @@ export function importSeen(value: unknown, replace = false): ImportResult {
     safeSetItem(SEEN_KEY, JSON.stringify(trimSeen(incoming)));
     notifyProgressOnce();
     const stored = seenCount();
-    return { stored, rejected, trimmed: Object.keys(incoming).length - stored };
+    return {
+      stored,
+      rejected,
+      trimmed: Object.keys(incoming).length - stored,
+      merged: 0,
+    };
   }
   const merged = { ...loadSeen() };
+  // 들어온 값이 승자가 된 키(저장소에 실제 반영된 후보)
+  const won = new Set<string>();
   for (const [k, seenAt] of Object.entries(incoming)) {
     const existing = merged[k];
-    if (existing === undefined || isNewerIso(seenAt, existing)) merged[k] = seenAt;
+    if (existing === undefined || isNewerIso(seenAt, existing)) {
+      merged[k] = seenAt;
+      won.add(k);
+    }
   }
   const trimmedStore = trimSeen(merged);
   safeSetItem(SEEN_KEY, JSON.stringify(trimmedStore));
   notifyProgressOnce();
-  // 실제로 남은 개수만 알려준다 (상한으로 잘렸을 수 있다)
+  // stored는 "들어온 시각이 들어간 개수"(R7-1). 기존 시각이 이긴 항목은 merged로 보낸다.
   const storedMap = loadSeen();
-  const kept = Object.keys(incoming).filter((k) => storedMap[k] !== undefined).length;
-  return { stored: kept, rejected, trimmed: Object.keys(incoming).length - kept };
+  const stored = [...won].filter((k) => storedMap[k] !== undefined).length;
+  return {
+    stored,
+    rejected,
+    trimmed: won.size - stored,
+    merged: Object.keys(incoming).length - won.size,
+  };
 }
 
 /**
@@ -619,7 +672,8 @@ export function importKoreanCache(
   value: unknown,
   replace = false,
 ): ImportResult {
-  if (typeof window === "undefined") return { stored: 0, rejected: 0, trimmed: 0 };
+  if (typeof window === "undefined")
+    return { stored: 0, rejected: 0, trimmed: 0, merged: 0 };
   const incoming: Record<string, CachedKorean> = {};
   let rejected = 0;
   const provided =
@@ -639,13 +693,26 @@ export function importKoreanCache(
     safeSetItem(KO_CACHE_KEY, JSON.stringify(trimKoreanCache(incoming)));
     notifyProgressOnce();
     const stored = koreanCacheCount();
-    return { stored, rejected, trimmed: Object.keys(incoming).length - stored };
+    return {
+      stored,
+      rejected,
+      trimmed: Object.keys(incoming).length - stored,
+      merged: 0,
+    };
   }
   // 기존 캐시를 우선한다 (화면에 보여 이미 검증된 번역을 덮어쓰지 않는다 — D2-1)
-  const merged = trimKoreanCache({ ...incoming, ...exportKoreanCache() });
+  const before = exportKoreanCache();
+  const merged = trimKoreanCache({ ...incoming, ...before });
   safeSetItem(KO_CACHE_KEY, JSON.stringify(merged));
   notifyProgressOnce();
+  // 합치기는 항상 기존 값이 이기므로(D2-1), "반영된 항목"은 아직 없던 키뿐이다.
   const storedMap = readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
-  const kept = Object.keys(incoming).filter((k) => storedMap[k] !== undefined).length;
-  return { stored: kept, rejected, trimmed: Object.keys(incoming).length - kept };
+  const won = Object.keys(incoming).filter((k) => before[k] === undefined);
+  const stored = won.filter((k) => storedMap[k] !== undefined).length;
+  return {
+    stored,
+    rejected,
+    trimmed: won.length - stored,
+    merged: Object.keys(incoming).length - won.length,
+  };
 }

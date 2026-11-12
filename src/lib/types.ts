@@ -91,12 +91,19 @@ export interface CorpusFile {
  * 백업·저장소 합치기가 실제로 무엇을 했는지 (D4-2).
  * 개수 하나만 돌려주면 "400개 합침"이 "400개만 들어가고 1,600건은 버려졌다"와
  * 구분되지 않는다(R6-3).
+ *
+ * ⚠️ stored는 "받아들여진 개수"다(R7-1). 키가 저장소에 있다는 사실만 세면
+ * 병합에서 기존 값(더 최근)이 이겨 아무것도 적용되지 않은 항목까지 합친 것처럼
+ * 보이고, 같은 키 중복까지 "상한으로 잘림"으로 보인다. 네 값은 이렇게 나눈다:
+ *   stored + merged + trimmed + rejected = 들어온 항목 수 (replace는 merged 0)
  */
 export interface ImportResult {
-  /** 저장소에 실제로 남은 항목 수 */
+  /** 들어온 값이 실제로 저장소에 반영된 항목 수 */
   stored: number;
   /** sanitizer가 거부한 항목 수 (형식·날짜·길이 규칙 위반) */
   rejected: number;
   /** 저장소 상한(MAX_RECORDS · MAX_SEEN · MAX_SRS · MAX_KOREAN_CACHE)으로 잘린 항목 수 */
   trimmed: number;
+  /** 합치기에서 기존 값(더 최근)이 이겨 적용되지 않은 항목 수(D2-1/R7-1) */
+  merged: number;
 }

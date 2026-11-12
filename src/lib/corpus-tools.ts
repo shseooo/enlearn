@@ -451,8 +451,9 @@ export function pickHints(sentence: string, stats: CorpusStats): string[] {
   // 힌트는 코퍼스 키·캐시와 짝을 이루는 값이라 결정론적이어야 한다.
   // seed로 순서를 돌리는 로직은 유일한 호출부가 항상 0을 넘겨 죽은 코드였고,
   // 힌트가 seed에 따라 바뀐다는 오해만 남겼다(resolved.md 결정, R6-14).
-  const window = ranked.slice(0, Math.min(ranked.length, 8));
-  return window.slice(0, 4).map((r) => r.hint);
+  // 그 회전을 받아야만 의미가 있던 "8개 중 고르기" 창도 함께 지운다(R7-12) —
+  // 남아 있으면 "힌트 8개 중 4개를 고른다"처럼 보이지만 실제로는 항상 상위 4개다.
+  return ranked.slice(0, 4).map((r) => r.hint);
 }
 
 /** 코퍼스 항목의 저장소 키 (레인 + 정규화 문장의 64비트 해시)

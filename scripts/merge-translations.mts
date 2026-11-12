@@ -113,23 +113,37 @@ function parseArg(arg: string, worklistSize: number): { path: string; offset: nu
   const [path, offsetRaw] = arg.split("#");
   const offset = Number(offsetRaw ?? 0);
   if (!path || !Number.isInteger(offset) || offset < 0 || offset >= worklistSize) {
-    console.error(
+    fail(
       `${arg}: 형식은 <파일>#<시작 행>이며 시작 행은 0..${worklistSize - 1} 범위여야 합니다.`,
     );
-    process.exit(1);
   }
   return { path, offset };
 }
+
+/**
+ * 실패를 안내로 끝낸다(R4-2/R6-9).
+ *
+ * ⚠️ 실제 쓰기는 모든 원고를 검증한 뒤 마지막에 한 번 일어난다. 앞 파일의 합침 로그를
+ * 먼저 남긴 채 뒤 파일이 실패하면 캐시는 통째로 그대로인데 사용자는 합쳐진 줄 안다(R7-5).
+ * 그래서 모든 실패 경로가 "저장되지 않았다"를 함께 말한다.
+ */
+function fail(message: string): never {
+  console.error(message);
+  console.error("원고를 합치지 못했습니다 — 어떤 원고도 캐시에 저장되지 않았습니다.");
+  process.exit(1);
+}
+
+/** 합친 개수. 전역이 아니라 main()이 들고 있는 지역 값이다(R7-5). */
+type Counters = { added: number; overwritten: number; skipped: number };
 
 /** 원고 파일을 읽는다. 경로 오타에서 스택 트레이스를 보여주지 않는다(R4-2). */
 function readManuscript(path: string): ManuscriptLine[] {
   // check-translations.mts와 같은 문장: 사람은 "어떤 파일이 없는지" 먼저 알아야 한다.
   if (!existsSync(path)) {
-    console.error(
+    fail(
       `파일을 찾을 수 없습니다: ${path} — 원고 경로와 "#<시작 행>"을 확인하세요. ` +
         `원고는 보통 .corpus-cache/ko/ 아래에 있습니다.`,
     );
-    process.exit(1);
   }
   return readFileSync(path, "utf8")
     .split("\n")
@@ -138,18 +152,16 @@ function readManuscript(path: string): ManuscriptLine[] {
     .map(parseManuscriptLine);
 }
 
-let added = 0;
-let overwritten = 0;
-let skipped = 0;
-
 /**
- * 원고 한 파일을 캐시에 합친다. 번호 어긋남·원문 앞부분 불일치는 그 자리에서 거부한다.
+ * 원고 한 파일을 검증해 캐시 객체에 합친다(실제 쓰기는 main이 마지막에 한 번 한다).
+ * 번호 어긋남·원문 앞부분 불일치는 그 자리에서 거부한다.
  * (예상 밖 오류를 한 줄 안내로 끝내려고 함수로 묶었다 — 리뷰 4-2)
  */
 function mergeOne(
   arg: string,
   rows: WorklistRow[],
   cache: Record<string, CacheEntry>,
+  counters: Counters,
 ): void {
   const { path, offset } = parseArg(arg, rows.length);
   const manuscript = readManuscript(path)
@@ -160,44 +172,39 @@ function mergeOne(
       // 빈 줄을 지웠으니 "번호 없는 줄만 믿는다"로는 원고 중간 빈 줄 한 줄이
       // 모든 번역을 한 칸 어긋나게 만드는 것을 잡지 못한다. 탭 대신 공백을 쓴
       // 줄도 같은 경로로 어긋난다. 헤더가 약속한 형식이므로 거부한다(리뷰 3-2).
-      console.error(
+      fail(
         `${path} ${i + 1}번째 줄에 worklist 행 번호(<번호>\t)가 없습니다. ` +
           `순서가 밀리면 모든 번역이 엉뚱한 문장에 붙으므로 파일을 통째로 거부합니다.`,
       );
-      process.exit(1);
     }
     if (line.rowNumber !== offset + i) {
-      console.error(
+      fail(
         `${path} ${i + 1}번째 줄: 예상 번호는 ${offset + i}인데 ${line.rowNumber}라고 적혀 있습니다. ` +
           `순서가 어긋났으므로 파일을 통째로 거부합니다.`,
       );
-      process.exit(1);
     }
     if (line.columns < 3) {
       // 옛 형식(<번호>\t<번역>)은 여기서 받지 않는다(D3-2: 호환 없음).
-      console.error(
+      fail(
         `${path} ${i + 1}번째 줄에 컬럼이 ${line.columns}개입니다. 원고 형식은 ` +
           `<번호>\t<원문 앞부분>\t<번역> 세 칸입니다(dump-untranslated.mts가 뽑는 manuscript.tsv를 쓰세요).`,
       );
-      process.exit(1);
     }
     const row = rows[offset + i];
     if (row && !prefixMatches(row.en, line.prefix)) {
-      console.error(
+      fail(
         `${path} ${i + 1}번째 줄: 원문 앞부분이 worklist와 다릅니다. ` +
           `원고에는 "${line.prefix.slice(0, 40)}", worklist에는 "${row.en.slice(0, 40)}" — ` +
           `두 줄이 맞바뀌었거나 순서가 다시 쓰였을 수 있어 파일을 통째로 거부합니다.`,
       );
-      process.exit(1);
     }
   });
 
   const remaining = rows.length - offset;
   if (manuscript.length > remaining) {
-    console.error(
+    fail(
       `${path}: 번역 ${manuscript.length}줄이 남은 문장 수(${remaining})보다 많습니다. 순서가 어긋났을 수 있어 거부합니다.`,
     );
-    process.exit(1);
   }
 
   manuscript.forEach(({ ko }, i) => {
@@ -207,7 +214,7 @@ function mergeOne(
       // 자체 정규식([가-힣])을 쓰면 자모·분해형 표기는 여기서만 "한글 없음"이 되어
       // 조용히 건너뛴다. check-translations는 통과하는 원고가 merge에서 버려진다(리뷰 2-11).
       console.warn(`  ! 건넙니다(한글 없음): ${row.en.slice(0, 40)}`);
-      skipped++;
+      counters.skipped++;
       return;
     }
     const foreign = foreignLetterRuns(ko);
@@ -215,12 +222,15 @@ function mergeOne(
       console.warn(`  ! 다른 언어 문자가 섞였습니다 [${foreign.join(" | ")}]: ${ko.slice(0, 50)}`);
     }
     const key = normalizeKey(row.en);
-    if (cache[key]) overwritten++;
-    else added++;
+    if (cache[key]) counters.overwritten++;
+    else counters.added++;
     cache[key] = { ko, hints: [] };
   });
 
-  console.log(`  ${path} +${manuscript.length}줄 (작업 목록 ${offset + 1}~${offset + manuscript.length})`);
+  // ⚠️ 아직 저장하지 않았다. 뒤 파일이 실패하면 이 합침도 함께 무효가 된다(R7-5).
+  console.log(
+    `  ${path} ${manuscript.length}줄 검증됨 (작업 목록 ${offset + 1}~${offset + manuscript.length}) — 아직 저장 안 함`,
+  );
 }
 
 function main(): void {
@@ -240,7 +250,8 @@ function main(): void {
     {},
   );
 
-  for (const arg of files) mergeOne(arg, rows, cache);
+  const counters: Counters = { added: 0, overwritten: 0, skipped: 0 };
+  for (const arg of files) mergeOne(arg, rows, cache, counters);
 
   // 임시 파일로 썼다가 이름을 바꾼다. 쓰는 도중에 멈추면 캐시 전체(JSON 한 장)가 깨진다.
   // 빌더는 부서진 캐시를 조용히 빈 캐시로 취급하므로, 1,400개 번역을 한 번에 잃을 수 있다.
@@ -248,7 +259,7 @@ function main(): void {
   writeJsonAtomically(CACHE_FILE, cache); // .corpus-cache/는 gitignore 대상
   const stillMissing = rows.filter((row) => !cache[normalizeKey(row.en)]?.ko).length;
   console.log(
-    `캐시 합침: 신규 ${added} · 갱신 ${overwritten} · 건너뜀 ${skipped} — ` +
+    `캐시 합침: 신규 ${counters.added} · 갱신 ${counters.overwritten} · 건너뜀 ${counters.skipped} — ` +
       `캐시 ${Object.keys(cache).length}항목 / 작업 목록 ${rows.length}문장 / 아직 번역 없음 ${stillMissing}문장`,
   );
 }
@@ -258,7 +269,9 @@ try {
 } catch (e) {
   // 예상 밖 오류도 한 줄 안내로 끝낸다(R4-2). 캐시 읽기·마지막 쓰기까지 같은 try 안에 있어,
   // 실패 원인이 스택 트레이스가 아니라 한국어 안내로 남는다(R6-9).
+  // ⚠️ 앞에 "검증됨" 로그가 있어도 캐시는 그대로다 — 그 사실을 분명히 남긴다(R7-5).
   console.error(`원고를 합치지 못했습니다: ${e instanceof Error ? e.message : String(e)}`);
+  console.error("어떤 원고도 캐시에 저장되지 않았습니다.");
   process.exit(1);
 }
 

@@ -331,6 +331,38 @@ describe("사전 번역 도구사슬", () => {
     expect(existsSync(join(workspace, ".corpus-cache", "translations.json"))).toBe(false);
   });
 
+  // R7-5: 실제 쓰기는 모든 원고를 검증한 뒤 한 번 일어난다. 앞 파일이 "합쳐졌다"처럼
+  // 보이는 로그만 남으면, 사용자는 두 번째 파일이 실패해도 캐시가 바뀐 줄 안다.
+  it("뒤의 원고가 실패하면 앞 원고도 저장되지 않았다는 사실을 함께 말한다 (R7-5)", () => {
+    const workspace = makeTrackedWorkspace();
+    run(workspace, "dump-untranslated.mts");
+    mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
+    writeFileSync(
+      join(workspace, ".corpus-cache", "ko", "first.txt"),
+      "0\tSentence number 1.\t첫 문장입니다.\n",
+    );
+    writeFileSync(
+      join(workspace, ".corpus-cache", "ko", "second.txt"),
+      "7\tSentence number 3.\t어긋난 문장입니다.\n",
+    );
+
+    const r = run(workspace, "merge-translations.mts", [
+      ".corpus-cache/ko/first.txt#0",
+      ".corpus-cache/ko/second.txt#1",
+    ]);
+
+    expect(r.status).toBe(1);
+    expect(r.out).toContain("예상 번호는 1인데 7");
+    // 앞 파일 성공 로그는 "아직 저장 안 함"이어야 한다.
+    expect(r.out).toContain("1줄 검증됨");
+    expect(r.out).toContain("아직 저장 안 함");
+    expect(r.out).not.toMatch(/^\s+\.corpus-cache\/ko\/first\.txt \+1줄/);
+    // 실패 문장은 저장되지 않았음을 분명히 말한다.
+    expect(r.out).toContain("어떤 원고도 캐시에 저장되지 않았습니다");
+    expect(r.out).not.toContain("캐시 합침:");
+    expect(existsSync(join(workspace, ".corpus-cache", "translations.json"))).toBe(false);
+  });
+
   it("원문 앞부분을 짧게 줄여 써도 같은 문장이면 받아들인다 (접두어 대조)", () => {
     const workspace = makeTrackedWorkspace();
     run(workspace, "dump-untranslated.mts");

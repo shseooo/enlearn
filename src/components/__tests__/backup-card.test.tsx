@@ -378,3 +378,39 @@ describe("BackupCard — 저장 실패 안내 (리뷰 3-9)", () => {
     expect(loadLog()).toHaveLength(MAX_RECORDS);
   });
 });
+
+/*
+ * R7-1: 합치기에서 기존 값(더 최근)이 이긴 항목은 저장소에 "키가 있다"는 사실로
+ * 세지면 합친 것처럼 보인다. 오래된 백업을 합친 자리에
+ * "저장소 상한으로 제외"까지 뜨면 사용자는 기록을 지워야 한다고 오해한다.
+ */
+describe("BackupCard — 합치기에서 밀린 항목 표시 (R7-1)", () => {
+  it("더 최근 기록에 밀리면 0건을 알리고 '저장소 상한' 문구를 쓰지 않는다", async () => {
+    logPractice({
+      lane: "classic",
+      en: "A sentence already newer than the backup.",
+      ko: "백업보다 최근인 문장.",
+      answer: "newest",
+      score: 90,
+      corrections: [],
+    });
+    // 지금 저장소와 같은 내용을 백업으로 합친다 → 적용되는 항목은 0건이다.
+    const text = JSON.stringify(buildBackup(false));
+
+    render(<BackupCard />);
+    const user = userEvent.setup();
+    await user.upload(
+      screen.getByLabelText(/백업 가져오기/),
+      new File([text], "enlearn-backup.json", { type: "application/json" }),
+    );
+    await user.click(screen.getByRole("button", { name: /지금 기록에 합치기/ }));
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("기록 0개");
+    expect(status.textContent).toMatch(/적용되지 않음/);
+    expect(status.textContent).not.toContain("저장소 상한");
+    // 값은 실제로 그대로다(되돌릴 이유가 없다)
+    expect(loadLog()).toHaveLength(1);
+    expect(loadLog()[0].answer).toBe("newest");
+  });
+});

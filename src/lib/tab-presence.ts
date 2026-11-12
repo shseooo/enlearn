@@ -25,19 +25,32 @@ function isPresenceMessage(value: unknown): value is PresenceMessage {
 
 let nextId = 0;
 
+/** 재공지 주기(ms). 두 주이상 소식이 없는 peer는 사라진 것으로 본다(R7-4). */
+export const TAB_HEARTBEAT_MS = 15_000;
+
+/** 테스트 등으로 주기를 조정할 수 있는 선택지 */
+export interface WatchOptions {
+  heartbeatMs?: number;
+}
+
 /**
  * 다른 탭이 살아 있는 동안 호출된다. 인자는 "다른 탭의 개수".
  * 지원되지 않는 환경(구 브라우저·SSR)에서는 아무것도 하지 않는 빈 cleanup을 돌려준다.
  */
-export function watchOtherTabs(onChange: (others: number) => void): () => void {
+export function watchOtherTabs(
+  onChange: (others: number) => void,
+  options: WatchOptions = {},
+): () => void {
   if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") {
     return () => {};
   }
+  const heartbeatMs = options.heartbeatMs ?? TAB_HEARTBEAT_MS;
   // 같은 탭의 자기 메시지는 무시하지만, id가 겹치면 다른 탭을 놓친다.
   // randomUUID가 없는 환경에서도 유일하도록 난수 + 증가 번호를 함께 쓴다.
   const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${++nextId}`;
   const channel = new BroadcastChannel(TAB_CHANNEL);
-  const peers = new Set<string>();
+  // peer id → 마지막 관측 시각. leave를 놓친 탭(크래시·강제 종료)은 TTL로 걷어낸다.
+  const peers = new Map<string, number>();
 
   const post = (type: PresenceMessage["type"]): void => {
     try {
@@ -53,7 +66,7 @@ export function watchOtherTabs(onChange: (others: number) => void): () => void {
     if (message.type === "leave") {
       peers.delete(message.id);
     } else {
-      peers.add(message.id);
+      peers.set(message.id, Date.now());
       // 새로 들어온 탭에게 "여기 있다"는 것을 알려준다(먼저 열린 탭은 join을 기다리지 않는다).
       if (message.type === "join") post("here");
     }
@@ -61,12 +74,32 @@ export function watchOtherTabs(onChange: (others: number) => void): () => void {
   };
 
   const announceLeave = (): void => post("leave");
+  // ⚠️ pagehide는 bfcache 진입(백그라운드·뒤로가기)에서도 발화한다. 그때 살아남은
+  // 탭은 pageshow로 돌아오므로 다시 이름을 알린다(R7-4). 재공지와 TTL이 없으면
+  // 배너 개수가 영구히 낡아 "낡은 사실"을 알려준다 — 경고가 꺼지는 방향은 특히 위험하다.
+  const announceJoin = (): void => post("join");
   window.addEventListener("pagehide", announceLeave);
+  window.addEventListener("pageshow", announceJoin);
+  const beat = window.setInterval(() => {
+    post("here");
+    const cutoff = Date.now() - heartbeatMs * 2;
+    let dropped = false;
+    for (const [peerId, seenAt] of peers) {
+      if (seenAt < cutoff) {
+        peers.delete(peerId);
+        dropped = true;
+      }
+    }
+    if (dropped) onChange(peers.size);
+  }, heartbeatMs);
+
   post("join");
   onChange(peers.size);
 
   return () => {
+    window.clearInterval(beat);
     window.removeEventListener("pagehide", announceLeave);
+    window.removeEventListener("pageshow", announceJoin);
     announceLeave();
     channel.close();
   };

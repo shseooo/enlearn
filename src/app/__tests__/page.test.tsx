@@ -2,6 +2,7 @@ import { render, screen, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Home from "../page";
+import { markSeen } from "@/lib/corpus";
 import { logPractice } from "@/lib/practice";
 
 beforeEach(() => {
@@ -31,6 +32,28 @@ describe("앱 셸", () => {
     expect(panel).toBeInTheDocument();
     // 키보드로 패널 안에 들어갈 수 있어야 한다
     expect(panel).toHaveAttribute("tabindex", "0");
+  });
+
+  // R7-8: entryKey가 64비트로 올라가면서 v2 값은 읽히지 않게 됐다. 마이그레이션은
+  // 하지 않지만(결정), 죽은 키가 남으면 ≈1.3MB가 용량을 먹고 "저장 공간" 실패가 안 풀린다.
+  it("앱이 열리면 다시 읽히지 않는 옛 키(seen·번역 캐시 v2)를 지운다 (R7-8)", async () => {
+    window.localStorage.setItem(
+      "enlearn.seen.v2",
+      JSON.stringify({ "classic:old:k": "2025-01-01T00:00:00.000Z" }),
+    );
+    window.localStorage.setItem(
+      "enlearn.kocache.v2",
+      JSON.stringify({ "classic:old:k": { ko: "옛 번역입니다.", hints: [] } }),
+    );
+    markSeen("classic:current:k");
+
+    render(<Home />);
+    await act(async () => {});
+
+    expect(window.localStorage.getItem("enlearn.seen.v2")).toBeNull();
+    expect(window.localStorage.getItem("enlearn.kocache.v2")).toBeNull();
+    // 지금 키는 그대로다 — 지운 것은 죽은 값뿐이다.
+    expect(window.localStorage.getItem("enlearn.seen.v3")).toContain("classic:current:k");
   });
 
   it("탭을 옮긴 뒤 돌아오면 입력한 문장이 남아있다", async () => {

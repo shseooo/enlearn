@@ -190,6 +190,31 @@ describe("간격반복(SRS)", () => {
     expect(dueItems().length).toBe(0);
   });
 
+  // R7-11: 아래 테스트는 큐에 항목이 하나일 때만 nextReviewDate를 불러,
+  // "가장 가까운 날짜"를 고르는 정렬이 한 번도 돈 적 없었다.
+  it("다음 복습 예정일은 큐에서 가장 가까운 날짜를 고른다 (R7-11)", () => {
+    // 먼 날짜를 먼저 넣고 가까운 날짜를 나중에 넣는다 — 삽입 순서가 아니라 날짜 순서여야 한다.
+    addForReview({
+      id: "classic:far",
+      lane: "classic",
+      en: "A sentence reviewed far away.",
+      ko: "먼저 복습하는 문장.",
+      now: day(-30),
+    }); // due = 30일 전 + 1일 = 어제보다 앞 — 이미 대기 중이다
+    gradeReview("classic:far", "knows"); // stage 1 → 3일 뒤로 밀린다
+    addForReview({
+      id: "classic:near",
+      lane: "classic",
+      en: "A sentence reviewed soon.",
+      ko: "가까이에서 복습하는 문장.",
+      now: day(-1),
+    }); // stage 0 → 0일(어제)이 due
+
+    expect(dueCount()).toBe(1);
+    // 아직 나오지 않는 문장 중 가장 가까운 날짜가 "다음 복습"이다.
+    expect(nextReviewDate()).toBe(addDays(today, REVIEW_INTERVALS[1]));
+  });
+
   it("어제 넣은 문장은 오늘 복습 대기다", () => {
     addForReview({
       id: "classic:y1",
@@ -471,6 +496,65 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
     expect(log[0].score).toBe(100);
   });
 
+  // R7-1: 같은 키 중복이 "저장소 상한으로 제외"로 잡히면, 사용자는 상한 때문에
+  // 기록을 지워야 한다고 오해한다(MAX_RECORDS=2,000과는 무관한 사안이다).
+  it("한 백업 안에 같은 id·날짜가 두 개 있어도 상한으로 잘린 것으로 세지 않는다 (R7-1)", () => {
+    const result = importLog([
+      {
+        date: today,
+        ts: 1_700_000_000_000,
+        lane: "classic",
+        en: "Duplicated inside one backup.",
+        ko: "한 백업 안의 중복 문장.",
+        answer: "first",
+        score: 50,
+      },
+      {
+        date: today,
+        ts: 1_700_000_000_001,
+        lane: "classic",
+        en: "Duplicated inside one backup.",
+        ko: "한 백업 안의 중복 문장.",
+        answer: "newer",
+        score: 70,
+      },
+    ]);
+    expect(result.stored).toBe(1); // 더 최근 시각 한 건만 들어간다
+    expect(result.trimmed).toBe(0); // 상한과 무관하므로 0
+    expect(result.merged).toBe(1); // 밀린 한 건은 "적용되지 않음"
+    expect(loadLog()).toHaveLength(1);
+    expect(loadLog()[0].answer).toBe("newer");
+  });
+
+  it("복습 큐 병합도 같은 id 중복을 상한 잘림으로 세지 않는다 (R7-1)", () => {
+    const result = importSrs([
+      {
+        id: "classic:dup",
+        lane: "classic",
+        en: "Duplicated queue item.",
+        ko: "중복 큐 항목.",
+        stage: 0,
+        due: addDays(today, 1),
+        lapses: 0,
+        lastReviewed: null,
+      },
+      {
+        id: "classic:dup",
+        lane: "classic",
+        en: "Duplicated queue item.",
+        ko: "중복 큐 항목.",
+        stage: 2,
+        due: addDays(today, 7),
+        lapses: 0,
+        lastReviewed: today,
+      },
+    ]);
+    expect(result.stored).toBe(1);
+    expect(result.trimmed).toBe(0);
+    expect(result.merged).toBe(1);
+    expect(reviewItems()).toHaveLength(1);
+  });
+
   // D2-1(R6-2): "누가 이기나"가 저장소마다 달랐다. 지금은 네 저장소 모두 최신 우선이다.
   it("합치기는 더 오래된 백업으로 최근 기록을 덮어쓰지 않는다 (D2-1)", () => {
     logPractice(record({ en: "Newest answer stays here.", answer: "newest", score: 90 }));
@@ -478,7 +562,9 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
     const result = importLog([
       { ...existing, answer: "older", score: 10, ts: existing.ts - 60_000 },
     ]);
-    expect(result.stored).toBe(1);
+    // R7-1: 저장소에 키가 있다는 사실로 세면 "0건이 적용된 합치기"가 성공처럼 보인다.
+    expect(result.stored).toBe(0);
+    expect(result.merged).toBe(1);
     expect(loadLog()).toHaveLength(1);
     expect(loadLog()[0].answer).toBe("newest");
     expect(loadLog()[0].score).toBe(90);
@@ -520,7 +606,9 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
         lastReviewed: addDays(today, -30),
       },
     ]);
-    expect(older.stored).toBe(1);
+    // 밀린 항목은 stored가 아니라 merged로 올라온다(R7-1).
+    expect(older.stored).toBe(0);
+    expect(older.merged).toBe(1);
     expect(reviewItems()[0].stage).toBe(stored.stage);
     expect(reviewItems()[0].lapses).toBe(0);
 
@@ -735,7 +823,9 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
         lastReviewed: null,
       },
     ]);
-    expect(accepted.stored).toBe(1);
+    // 기존 값(더 높은 stage)이 이겼으므로 적용된 항목은 0개다(R7-1).
+    expect(accepted.stored).toBe(0);
+    expect(accepted.merged).toBe(1);
     const [item] = reviewItems();
     expect(item.stage).toBe(1);
     expect(item.due).toBe(addDays(today, 3));
@@ -824,6 +914,44 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     expect(window.localStorage.getItem("enlearn.log.v1")).toBe(before);
     restoreWrites();
     setItem("enlearn.log.v1", before!);
+  });
+
+  /*
+   * R7-7: loadLog·loadSrs가 정규화 결과를 raw 문자열 기준으로 기억한다. 쓰기(실패 포함)
+   * 때마다 그 기억을 버리지 않으면, 저장되지 않은 값이 화면에 보이는 "유령"이 된다.
+   */
+  it("정규화 기억을 써도 실패한 쓰기가 화면에 보이지 않는다 (R7-7)", () => {
+    logPractice({
+      lane: "classic",
+      en: "A record that is really stored.",
+      ko: "실제로 저장된 기록.",
+      answer: "kept",
+      score: 60,
+      corrections: [],
+    });
+    const before = loadLog().length;
+    // 두 번 읽어야 정규화 기억이 만들어진다.
+    expect(loadLog().length).toBe(before);
+    // 기억이 실제로 쓰이는지: 항목 객체는 다시 만들지 않고, 배열은 복사해 준다.
+    // (배열을 그대로 돌려주면 logPractice의 push가 기억을 오염시킨다)
+    expect(loadLog()[0]).toBe(loadLog()[0]);
+    expect(loadLog()).not.toBe(loadLog());
+
+    failWrites();
+    logPractice({
+      lane: "classic",
+      en: "A record that never reached storage.",
+      ko: "저장되지 못한 기록.",
+      answer: "phantom",
+      score: 10,
+      corrections: [],
+    });
+    restoreWrites();
+
+    const after = loadLog();
+    expect(after).toHaveLength(before);
+    expect(after.some((r) => r.answer === "phantom")).toBe(false);
+    expect(srsCount()).toBe(1);
   });
 
   it("백업이 상한을 넘기면 최근 기록이 남고 잘린 개수를 알려준다", () => {

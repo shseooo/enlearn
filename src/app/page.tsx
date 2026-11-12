@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { clearLegacyStorageKeys } from "@/lib/corpus";
 import {
   getSettingsServerSnapshot,
   getSettingsSnapshot,
@@ -40,6 +41,12 @@ function useSettings() {
 export default function Home() {
   const [tab, setTab] = useState<TabId>("free");
   const { settings, update } = useSettings();
+
+  // entryKey가 64비트로 바뀌어 다시 읽히지 않는 옛 키(seen·번역 캐시 v2)를 지운다.
+  // 값을 옮기지는 않는다(결정: 마이그레이션 없음) — 죽은 값이 용량만 차지한다(R7-8).
+  useEffect(() => {
+    clearLegacyStorageKeys();
+  }, []);
 
   /** 탭 목록에서 좌우 방향키/Home/End로 이동한다 (tablist 접근성 규칙) */
   function onTabKeyDown(e: React.KeyboardEvent, index: number) {

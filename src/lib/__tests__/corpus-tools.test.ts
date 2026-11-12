@@ -351,6 +351,17 @@ describe("pickHints", () => {
     expect(hints).not.toContain("123");
   });
 
+  // R7-12: seed 회전을 받아야만 의미가 있던 "8개 중 고르기" 창이 죽은 채로 남아
+  // "힌트 8개 중 4개를 고른다"처럼 보였다. 실제로는 항상 상위 4개다.
+  it("후보가 8개를 넘어도 힌트는 항상 4개를 넘지 않는다 (R7-12)", () => {
+    const sentence =
+      "The obstreperous porcupine endeavoured to penetrate the golden trellis whilst examining sundries quietly.";
+    const hints = pickHints(sentence, stats);
+    expect(hints.length).toBeLessThanOrEqual(4);
+    // 후보가 넉넉한 문장이므로 4개는 채워진다 — "8개 창"이 결과에 개입하지 않는다.
+    expect(hints).toHaveLength(4);
+  });
+
   // R6-14: seed 인자와 회전 로직은 죽은 코드였다(유일한 호출부는 인자 두 개로 부른다).
   // 힌트는 코퍼스 키·캐시와 짝을 이루는 값이라 호출마다 같아야 한다.
   it("힌트는 seed 없이 결정론적이다 (R6-14)", () => {

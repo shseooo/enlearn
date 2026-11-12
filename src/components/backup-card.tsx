@@ -97,6 +97,9 @@ export default function BackupCard() {
       counts.log + counts.srs + counts.seen + counts.koreanCache;
     const trimmed = sum(result.trimmed);
     const rejected = sum(result.rejected);
+    // R7-1: 상한으로 잘린 것과 합치기에서 밀린 것을 같은 문구로 보여주면
+    // 사용자는 "저장소 상한" 때문에 기록을 지워야 한다고 오해한다.
+    const notApplied = sum(result.merged);
     setMessage(
       [
         `기록 ${result.log}개`,
@@ -105,6 +108,7 @@ export default function BackupCard() {
         `번역 캐시 ${result.koreanCache}개`,
         result.settingsRestored ? "연결 설정" : null,
         trimmed > 0 ? `${trimmed}건은 저장소 상한으로 제외` : null,
+        notApplied > 0 ? `${notApplied}건은 더 최근 기록이 있어 적용되지 않음` : null,
         rejected > 0 ? `${rejected}건은 형식이 맞지 않아 제외` : null,
       ]
         .filter(Boolean)

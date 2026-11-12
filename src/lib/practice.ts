@@ -34,11 +34,13 @@ const CHANGE_EVENT = "enlearn:practice-changed";
  *    · 번역 캐시 4,000건 ≈ 0.4MB · 복습 큐 500건 ≈ 0.25MB → 합쳐 약 2.3MB.
  *  localStorage 한도(약 5MB) 안에서 세 저장소를 함께 쓰되 여유를 남기는 값이다.
  *  3,000건도 가능하지만(≈1.1MB) 쓸 때마다 통째로 직렬화하는 비용이 커진다.
+ *  옛 키(enlearn.seen.v2 · enlearn.kocache.v2)는 앱이 열릴 때 지운다(R7-8) —
+ *  위 계산은 "지금 저장소"만 센 값이고, 죽은 키 ≈1.3MB가 예산을 몰래 먹는다.
  */
 export const MAX_RECORDS = 2_000;
 const MAX_CORRECTIONS = 5;
 const MAX_TEXT = 400;
-/** 저장소 키로 쓰는 id 길이 상한(R5-4). en/ko/answer는 clip으로 Already 자르지만 id만 무제한이었다. */
+/** 저장소 키로 쓰는 id 길이 상한(R5-4). en/ko/answer는 clip으로 이미 자르지만 id만 무제한이었다. */
 const MAX_ID_CHARS = 200;
 /** 복습 큐 상한. 이걸 넘기면 가장 낮은 단계부터 밀어낸다. */
 export const MAX_SRS = 500;
@@ -96,12 +98,38 @@ function capStoredTimestamp(ts: number, maxTs: number): number {
 // 저장소 헬퍼
 // ---------------------------------------------------------------------------
 
-function readArray<T>(key: string): T[] {
+const normalizedCache = new Map<string, { raw: string; value: unknown[] }>();
+
+function readArray<T>(key: string, day: string, normalize: (raw: unknown) => T | null): T[] {
   if (typeof window === "undefined") return [];
-  // 같은 문자열은 다시 파싱하지 않는다 (스냅샷·통계가 렌더마다 400개를 파는 일을 줄인다)
-  return (
-    parseStored<T[]>(key, window.localStorage.getItem(key), Array.isArray) ?? []
-  );
+  const raw = window.localStorage.getItem(key);
+  if (raw === null) return [];
+  // ⚠️ normalize까지 기억한다(storage.ts의 파싱 캐시와 짝을 이루는 "normalize 캐시", R7-7).
+  // MAX_RECORDS가 400 → 2,000이 되면서 집계 한 번에 loadLog 3번·loadSrs 4번이
+  // 같은 저장소를 통째로 다시 판다(채점 한 번에 약 6,000개 객체 + 수만 개 문자열).
+  // 날짜가 키에 들어가는 이유: normalizeRecord·normalizeSrs는 "오늘" 기준으로
+  // 미래 날짜를 바로잡으므로, 자정이 지나면 같은 문자열도 새로 정규화해야 한다.
+  const cacheKey = `${key}@${day}`;
+  const hit = normalizedCache.get(cacheKey);
+  if (hit && hit.raw === raw) return hit.value.slice() as T[];
+  const parsed = parseStored<unknown[]>(key, raw, Array.isArray) ?? [];
+  const value: T[] = [];
+  for (const item of parsed) {
+    const normalized = normalize(item);
+    if (normalized !== null) value.push(normalized);
+  }
+  // 오래된 "날짜" 조각이 쌓이지 않게 잘라낸다(키 두 개 × 며칠쯤이면 충분하다).
+  if (normalizedCache.size > 8) normalizedCache.clear();
+  normalizedCache.set(cacheKey, { raw, value });
+  // 호출자가 배열을 고쳐도(logPractice는 push한다) 기억은 오염되지 않게 복사해 준다.
+  return [...value];
+}
+
+/** 그 키에 대한 정규화 기억을 버린다(쓰기가 실패해도 저장소의 이전 값으로 돌아가야 한다). */
+function dropNormalized(key: string): void {
+  for (const cacheKey of [...normalizedCache.keys()]) {
+    if (cacheKey.startsWith(`${key}@`)) normalizedCache.delete(cacheKey);
+  }
 }
 
 /** 알림 묶음: 한 동작이 여러 저장소를 바꿔도 화면은 한 번만 갱신한다 */
@@ -112,6 +140,9 @@ function writeArray(key: string, value: unknown[]): boolean {
   // 저장 실패(용량 초과 등)는 삼킨다. 예외가 이벤트 핸들러까지 번지면
   // 화면이 멈추고, 그 이유가 "저장 공간"이라는 것을 사용자는 알 수 없다.
   const ok = safeSetItem(key, JSON.stringify(value));
+  // 실패 여부와 무관하게 기억을 지운다. 그래야 다음 읽기가 저장소의
+  // "실제로 남은 값"을 본다(리뷰 2-4 — 실패한 변경이 화면에 보이면 안 된다).
+  dropNormalized(key);
   if (batchDepth === 0) notifyPractice();
   return ok;
 }
@@ -223,9 +254,7 @@ function normalizeRecord(r: unknown, today = localDateString()): PracticeRecord 
 
 export function loadLog(): PracticeRecord[] {
   const today = localDateString();
-  return readArray<unknown>(LOG_KEY)
-    .map((r) => normalizeRecord(r, today))
-    .filter((r): r is PracticeRecord => r !== null);
+  return readArray<PracticeRecord>(LOG_KEY, today, (r) => normalizeRecord(r, today));
 }
 
 /**
@@ -411,9 +440,7 @@ function normalizeSrs(raw: unknown): SrsItem | null {
 }
 
 function loadSrs(): SrsItem[] {
-  return readArray<unknown>(SRS_KEY)
-    .map(normalizeSrs)
-    .filter((x): x is SrsItem => x !== null);
+  return readArray<SrsItem>(SRS_KEY, localDateString(), normalizeSrs);
 }
 
 /** 복습 큐에 문장을 넣는다. 이미 있으면 진행 상황을 그대로 둔다. */
@@ -705,7 +732,7 @@ function sanitizeRecord(value: unknown): PracticeRecord | null {
   const o = value as Record<string, unknown>;
   const rawDate = typeof o.date === "string" ? o.date : "";
   // 형식만 보고 통과시키면 미래 날짜가 상한 트림에서 실제 기록을 밀어낸다(R4-4).
-  // 백업 경계에서는 거부하고, importLog가 "실제로 남은 개수"를 알려주므로 사용자는 알아챈다.
+  // 백업 경계에서는 거부하고, importLog가 "실제로 들어간 개수"를 알려주므로 사용자는 알아챈다.
   if (!isStorableDate(rawDate)) return null;
   // 하루 어긋난 시계는 살리되 저장에는 오늘로 적는다 — 저장에 미래 날짜를 남기지 않는다.
   const date = capStoredDate(rawDate);
@@ -809,23 +836,37 @@ export function importLog(items: unknown[], replace = false): ImportResult {
     writeArray(LOG_KEY, kept);
     // 개수 상한(MAX_RECORDS)으로 잘린 경우 요청 개수가 아니라 실제로 남은 개수를 알려준다.
     const stored = loadLog().length;
-    return { stored, rejected, trimmed: incoming.length - stored };
+    // 대체는 기존 값과 비교하지 않으므로 "밀린 항목"은 없다.
+    return { stored, rejected, trimmed: incoming.length - stored, merged: 0 };
   }
-  if (!incoming.length) return { stored: 0, rejected, trimmed: 0 };
+  if (!incoming.length) return { stored: 0, rejected, trimmed: 0, merged: 0 };
   const byIdDate = new Map<string, PracticeRecord>();
   for (const r of loadLog()) byIdDate.set(`${r.id}|${r.date}`, r);
+  // 이 항목의 값이 병합 결과의 "승자"가 된 키. 마지막에 이긴 항목만 남는다.
+  const won = new Set<string>();
   for (const r of incoming) {
     const key = `${r.id}|${r.date}`;
     const existing = byIdDate.get(key);
     // D2-1: 더 최근 시각이 이긴다. 시각이 같으면 기존 값(이미 화면에서 본 값)을 지킨다.
-    if (!existing || r.ts > existing.ts) byIdDate.set(key, r);
+    if (!existing || r.ts > existing.ts) {
+      byIdDate.set(key, r);
+      won.add(key);
+    }
   }
   const merged = sortRecords([...byIdDate.values()]);
   writeArray(LOG_KEY, merged.slice(-MAX_RECORDS));
-  const wanted = new Set(incoming.map((r) => `${r.id}|${r.date}`));
-  const stored = loadLog().filter((r) => wanted.has(`${r.id}|${r.date}`)).length;
-  // 더 최근 기존 기록에 밀린 항목은 세지 않는다 — 그것은 손실이 아니라 병합 규칙의 결과다.
-  return { stored, rejected, trimmed: incoming.length - stored };
+  // stored는 "들어온 값이 들어간 개수"(R7-1). 더 최근 기존 기록에 밀린 항목은
+  // 저장소에 키가 있다는 사실만 세면 안 된다 — 적용되지 않은 것을 합친 것처럼 보인다.
+  const present = new Set(loadLog().map((r) => `${r.id}|${r.date}`));
+  const stored = [...won].filter((k) => present.has(k)).length;
+  return {
+    stored,
+    rejected,
+    // 상한(MAX_RECORDS)으로 실제로 밀려난 항목만 trimmed에 넣는다.
+    trimmed: won.size - stored,
+    // 기존 값이 이긴 항목 + 같은 파일 안에서 자기보다 최근 사본에 밀린 중복 항목.
+    merged: incoming.length - won.size,
+  };
 }
 
 /**
@@ -841,24 +882,35 @@ export function importSrs(items: unknown[], replace = false): ImportResult {
   if (replace) {
     writeArray(SRS_KEY, trimSrs(incoming));
     const stored = loadSrs().length;
-    return { stored, rejected, trimmed: incoming.length - stored };
+    return { stored, rejected, trimmed: incoming.length - stored, merged: 0 };
   }
-  if (!incoming.length) return { stored: 0, rejected, trimmed: 0 };
+  if (!incoming.length) return { stored: 0, rejected, trimmed: 0, merged: 0 };
   const byId = new Map<string, SrsItem>();
   for (const x of loadSrs()) byId.set(x.id, x);
+  const won = new Set<string>();
   for (const x of incoming) {
     const existing = byId.get(x.id);
     if (!existing) {
       byId.set(x.id, x);
+      won.add(x.id);
       continue;
     }
     // null은 0으로 두고 비교한다(같은 시각이면 기존 값이 이긴다).
     const incomingTime = x.lastReviewed ? Date.parse(x.lastReviewed) : 0;
     const existingTime = existing.lastReviewed ? Date.parse(existing.lastReviewed) : 0;
-    byId.set(x.id, incomingTime > existingTime ? x : existing);
+    if (incomingTime > existingTime) {
+      byId.set(x.id, x);
+      won.add(x.id);
+    }
   }
   writeArray(SRS_KEY, trimSrs([...byId.values()]));
-  const ids = new Set(incoming.map((x) => x.id));
-  const stored = loadSrs().filter((x) => ids.has(x.id)).length;
-  return { stored, rejected, trimmed: incoming.length - stored };
+  // stored는 "들어온 값이 들어간 개수"(R7-1): trimSrs로 밀려난 것까지 세지 않는다.
+  const present = new Set(loadSrs().map((x) => x.id));
+  const stored = [...won].filter((id) => present.has(id)).length;
+  return {
+    stored,
+    rejected,
+    trimmed: won.size - stored,
+    merged: incoming.length - won.size,
+  };
 }

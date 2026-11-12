@@ -96,4 +96,52 @@ describe("watchOtherTabs", () => {
     await settle();
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  /*
+   * R7-4: leave는 정상 종료만 알린다. 크래시·강제 종료로 leave가 없으면
+   * 배너 개수가 영구히 낡아 "없는 탭을 세는" 상태가 남는다.
+   */
+  it("leave 없이 peer 채널만 닫아도 TTL 뒤에 개수가 0으로 돌아온다 (R7-4)", async () => {
+    const onChange = vi.fn();
+    const stop = watchOtherTabs(onChange, { heartbeatMs: 20 });
+    try {
+      const other = peer();
+      other.postMessage({ type: "join", id: "peer-crash" });
+      await settle();
+      expect(onChange).toHaveBeenLastCalledWith(1);
+
+      other.close(); // 크래시 흉내 — leave를 보낼 기회가 없었다
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(onChange).toHaveBeenLastCalledWith(0);
+    } finally {
+      stop();
+    }
+  });
+
+  it("bfcache로 돌아오면(pageshow) 다시 이름을 알린다 (R7-4)", async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const stopFirst = watchOtherTabs(first);
+    const stopSecond = watchOtherTabs(second);
+    try {
+      await settle();
+      expect(first).toHaveBeenLastCalledWith(1);
+      expect(second).toHaveBeenLastCalledWith(1);
+
+      // bfcache 진입: pagehide가 발화하고 상대는 우리를 peer에서 지운다.
+      window.dispatchEvent(new Event("pagehide"));
+      await settle();
+      expect(first).toHaveBeenLastCalledWith(0);
+      expect(second).toHaveBeenLastCalledWith(0);
+
+      // bfcache 복원: 재공지가 없으면 두 탭이 동시에 쓰는 중인데 배너는 꺼져 있다.
+      window.dispatchEvent(new Event("pageshow"));
+      await settle();
+      expect(first).toHaveBeenLastCalledWith(1);
+      expect(second).toHaveBeenLastCalledWith(1);
+    } finally {
+      stopFirst();
+      stopSecond();
+    }
+  });
 });

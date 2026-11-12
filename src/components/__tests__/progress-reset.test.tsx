@@ -207,16 +207,6 @@ describe("ProgressReset", () => {
  * 한 클릭으로 seen·번역 캐시·연습 기록·복습 큐가 사라지고 되돌릴 수단이 없다.
  */
 describe("ProgressReset — 파괴적 삭제 확인 (D1-1)", () => {
-  const DESTRUCTIVE_BUTTONS: RegExp[] = [
-    /💬 회화 기록 지우기/,
-    /📖 동화 기록 지우기/,
-    /🔄 한국어 번역 캐시 지우기/,
-    /전체 초기화/,
-    /🗑 연습 기록 지우기/,
-    /🗑 복습 큐 비우기/,
-    /연습 기록 \+ 복습 큐 초기화/,
-  ];
-
   /** 모든 저장소를 채운다 — 취소를 눌렀을 때는 하나도 줄면 안 된다. */
   function seedEveryStore(): void {
     markSeen(entryKey(dailyEntry));
@@ -233,31 +223,50 @@ describe("ProgressReset — 파괴적 삭제 확인 (D1-1)", () => {
   }
 
   const storeCounts = () => ({
-    seen: seenCount(),
+    seenDaily: seenCount("daily"),
+    seenClassic: seenCount("classic"),
     korean: koreanCacheCount(),
     log: loadLog().length,
     srs: srsCount(),
   });
 
+  /*
+   * "무엇을 지우는 버튼인지"가 화면에 다시 없는 라벨과 저장소는 이 표로만 대응된다.
+   * 확인이 필요한 버튼 전체(D1-1)와, 각 버튼이 지워야 할 저장소(R7-6)를 한 곳에 둔다.
+   * 네 저장소를 OR로 묶으면 핸들러의 what 인자가 뒤바뀌어 큐를 지워야 할 버튼이
+   * 기록을 지워도 통과한다 — 그래서 저장소마다 기대값을 적는다.
+   */
+  const EFFECTS: { label: RegExp; after: ReturnType<typeof storeCounts> }[] = [
+    { label: /💬 회화 기록 지우기/, after: { seenDaily: 0, seenClassic: 1, korean: 1, log: 1, srs: 1 } },
+    { label: /📖 동화 기록 지우기/, after: { seenDaily: 1, seenClassic: 0, korean: 1, log: 1, srs: 1 } },
+    { label: /🔄 한국어 번역 캐시 지우기/, after: { seenDaily: 1, seenClassic: 1, korean: 0, log: 1, srs: 1 } },
+    // "전체 초기화"는 코퍼스 쪽(seen·번역 캐시)만 지운다 — 연습 기록·복습 큐는 그대로다.
+    { label: /전체 초기화/, after: { seenDaily: 0, seenClassic: 0, korean: 0, log: 1, srs: 1 } },
+    { label: /🗑 연습 기록 지우기/, after: { seenDaily: 1, seenClassic: 1, korean: 1, log: 0, srs: 1 } },
+    { label: /🗑 복습 큐 비우기/, after: { seenDaily: 1, seenClassic: 1, korean: 1, log: 1, srs: 0 } },
+    { label: /연습 기록 \+ 복습 큐 초기화/, after: { seenDaily: 1, seenClassic: 1, korean: 1, log: 0, srs: 0 } },
+  ];
+
   it("확인 창을 취소하면 어떤 저장소도 건드리지 않는다", async () => {
     seedEveryStore();
     const before = storeCounts();
-    expect(before.seen).toBe(2);
+    expect(before.seenDaily).toBe(1);
+    expect(before.seenClassic).toBe(1);
     expect(before.korean).toBe(1);
     expect(before.log).toBe(1);
     expect(before.srs).toBe(1);
 
     vi.mocked(window.confirm).mockReturnValue(false);
 
-    for (const button of DESTRUCTIVE_BUTTONS) {
+    for (const { label } of EFFECTS) {
       const view = render(<ProgressReset />);
       const user = userEvent.setup();
       await screen.findByRole("heading", { name: "연습 기록" });
-      await user.click(screen.getByRole("button", { name: button }));
+      await user.click(screen.getByRole("button", { name: label }));
 
-      expect(storeCounts(), `버튼: ${button}`).toEqual(before);
+      expect(storeCounts(), `버튼: ${label}`).toEqual(before);
       view.unmount();
-      expect(window.confirm, `버튼: ${button}`).toHaveBeenCalledTimes(1);
+      expect(window.confirm, `버튼: ${label}`).toHaveBeenCalledTimes(1);
       vi.mocked(window.confirm).mockClear();
     }
   });
@@ -274,21 +283,18 @@ describe("ProgressReset — 파괴적 삭제 확인 (D1-1)", () => {
     expect(String(prompt)).toContain("백업");
   });
 
-  it("확인하면 일곱 버튼 모두 실제로 지운다", async () => {
-    for (const button of DESTRUCTIVE_BUTTONS) {
+  it("확인하면 각 버튼이 자기가 맡은 저장소만 지운다", async () => {
+    for (const { label, after } of EFFECTS) {
       window.localStorage.clear();
       seedEveryStore();
 
       const view = render(<ProgressReset />);
       const user = userEvent.setup();
       await screen.findByRole("heading", { name: "연습 기록" });
-      await user.click(screen.getByRole("button", { name: button }));
+      await user.click(screen.getByRole("button", { name: label }));
 
-      const after = storeCounts();
+      expect(storeCounts(), `버튼: ${label}`).toEqual(after);
       view.unmount();
-      const cleared =
-        after.seen < 2 || after.korean < 1 || after.log < 1 || after.srs < 1;
-      expect(cleared, `버튼: ${button}`).toBe(true);
     }
   });
 });

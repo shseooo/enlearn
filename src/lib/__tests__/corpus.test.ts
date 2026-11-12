@@ -5,6 +5,7 @@ import {
   cacheKorean,
   clearCorpusCache,
   clearKoreanCache,
+  clearLegacyStorageKeys,
   exportKoreanCache,
   dailySeed,
   getCachedCorpus,
@@ -781,7 +782,10 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
       "classic:newer:k": "2026-09-09T00:00:00.000Z",
       "classic:same:k": "2026-06-01T12:00:00.000Z",
     });
-    expect(older.stored).toBe(3);
+    // R7-1: 적용된 항목은 실제로 값이 들어간 1건뿐이다. 나머지 두 건은
+    // 저장소에 키가 있다는 사실로 세면 "다 합쳤다"처럼 보인다.
+    expect(older.stored).toBe(1);
+    expect(older.merged).toBe(2);
     const seen = loadSeen();
     expect(seen["classic:keep:k"]).toBe("2026-06-01T00:00:00.000Z");
     // 더 최근 시각은 받아들여진다.
@@ -790,13 +794,87 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     expect(seen["classic:same:k"]).toBe("2026-06-01T12:00:00.000Z");
   });
 
+  // R7-3: isNewerIso가 존재하는 이유(시간대 표기가 다른 값)와 "파싱되지 않는 시각" 갈래가
+  // 테스트에 한 번도 지나가지 않았다. 문자열 비교라면 아래 세 갈래가 틀어진다.
+  it("본 시각이 같은 순간의 다른 표기(+09:00 / Z)면 기존 값을 지킨다 (R7-3)", () => {
+    importSeen({ "classic:offset:k": "2026-06-01T09:00:00+09:00" }, true);
+
+    // 같은 순간(2026-06-01T00:00:00Z)을 다른 표기로 들여보낸다 → 같은 시각 = 기존 승리.
+    importSeen({ "classic:offset:k": "2026-06-01T00:00:00.000Z" });
+    expect(loadSeen()["classic:offset:k"]).toBe("2026-06-01T09:00:00+09:00");
+
+    // 사전순으로는 "…T00:30…Z"가 "…T09:00…+09:00"보다 앞서지만 실제 시각은 뒤다.
+    // 문자열 비교라면 이 합치기가 기존(더 최근) 값을 밀어버린다.
+    const result = importSeen({ "classic:offset:k": "2026-06-01T00:30:00.000Z" });
+    expect(loadSeen()["classic:offset:k"]).toBe("2026-06-01T00:30:00.000Z");
+    expect(result.stored).toBe(1);
+  });
+
+  it("저장소에 이미 손상된 본 시각이 있으면 들어온 값을 받아들인다 (R7-3)", () => {
+    // 과거 버전이 쓴 값처럼 저장소에 직접 심는다(normalizeSeenValue를 거치지 않은 경로).
+    window.localStorage.setItem(
+      "enlearn.seen.v3",
+      JSON.stringify({ "classic:broken:k": "asdf", "classic:ok:k": "2026-06-01T00:00:00.000Z" }),
+    );
+
+    const result = importSeen({
+      "classic:broken:k": "2026-07-07T00:00:00.000Z",
+      "classic:ok:k": "2020-01-01T00:00:00.000Z",
+    });
+    const seen = loadSeen();
+    // 파싱되지 않는 기존 값은 "가장 오래된 값"으로 취급되어 밀려난다.
+    expect(seen["classic:broken:k"]).toBe("2026-07-07T00:00:00.000Z");
+    // 정상 값은 원래 더 최근인 기존 값이 그대로 이긴다.
+    expect(seen["classic:ok:k"]).toBe("2026-06-01T00:00:00.000Z");
+    expect(result.stored).toBe(1);
+    expect(result.merged).toBe(1);
+  });
+
+  it("형식 밖의 들어온 본 시각은 지금 시각으로 바뀌어 들어온다 (R7-3)", () => {
+    importSeen({ "classic:now:k": "방금 봤다" }, true);
+    const value = loadSeen()["classic:now:k"];
+    expect(Number.isFinite(Date.parse(value))).toBe(true);
+    expect(Math.abs(Date.parse(value) - Date.now())).toBeLessThan(60_000);
+  });
+
+  // R7-2: 합치기 판정은 Date.parse로 하는데 상한 트림은 문자열 순서로 버리면,
+  // 시간대 표기가 다른 저장소에서 살아남아야 할 최근 기록이 먼저 밀려난다.
+  it("seen 상한 트림은 시간대 표기와 무관하게 실제 시각으로 버린다 (R7-2)", () => {
+    const base = Date.UTC(2026, 0, 1);
+    const bulk: Record<string, string> = {};
+    for (let i = 0; i < MAX_SEEN; i++) {
+      const when = base + i * 1_000;
+      if (i % 2 === 0) {
+        bulk[`classic:${i}:k`] = new Date(when).toISOString();
+      } else {
+        // 같은 순간을 "+09:00" 표기로 쓴다 — 사전순으로는 또래보다 훨씬 뒤로 밀린다.
+        bulk[`classic:${i}:k`] = `${new Date(when + 9 * 3_600_000).toISOString().slice(0, -1)}+09:00`;
+      }
+    }
+    // 가장 최근 항목을 "-11:00" 표기로 넣는다 — 사전순으로는 전체에서 가장 앞선다.
+    bulk["classic:newest:k"] = `${
+      new Date(base + MAX_SEEN * 1_000 - 11 * 3_600_000).toISOString().slice(0, -1)
+    }-11:00`;
+
+    importSeen(bulk, true);
+
+    const seen = loadSeen();
+    expect(seenCount()).toBe(MAX_SEEN);
+    // 문자열 순서로 버렸다면 이 항목이 밀려났을 것이다.
+    expect(seen["classic:newest:k"]).toBeTruthy();
+    // 실제로 가장 오래된 0번이 밀려난다.
+    expect(seen["classic:0:k"]).toBeUndefined();
+  });
+
   it("번역 캐시 합치기는 기존 값(화면에 보여 검증된 번역)을 지킨다 (D2-1)", () => {
     cacheKorean("classic:keep:k", "기존 번역입니다.", ["old"]);
     const result = importKoreanCache({
       "classic:keep:k": { ko: "백업의 다른 번역입니다.", hints: ["new"] },
       "classic:new:k": { ko: "새로 들어온 번역입니다.", hints: ["new"] },
     });
-    expect(result.stored).toBe(2); // 두 항목 모두 저장소에 있다
+    // R7-1: 같은 키(기존 번역이 이김)는 "적용되지 않음"으로 따로 센다.
+    expect(result.stored).toBe(1);
+    expect(result.merged).toBe(1);
     expect(getCachedKorean("classic:keep:k")?.ko).toBe("기존 번역입니다.");
     expect(getCachedKorean("classic:new:k")?.ko).toBe("새로 들어온 번역입니다.");
 
@@ -842,5 +920,40 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
 
     expect(seenCount()).toBe(before);
     expect("daily:9:zz" in loadSeen()).toBe(false);
+  });
+});
+
+/*
+ * R7-8: 키 이름이 v3으로 올라간 뒤에도 옛 키는 브라우저에 남아 용량을 먹는다.
+ * 마이그레이션(값 옮기기)은 하지 않지만, 죽은 키는 지운다.
+ */
+describe("죽은 옛 키 정리 (R7-8)", () => {
+  it("v2 키를 지우고 지금 키는 그대로 둔다", () => {
+    window.localStorage.setItem(
+      "enlearn.seen.v2",
+      JSON.stringify({ "classic:old:k": "2025-01-01T00:00:00.000Z" }),
+    );
+    window.localStorage.setItem(
+      "enlearn.kocache.v2",
+      JSON.stringify({ "classic:old:k": { ko: "옛 번역입니다.", hints: [] } }),
+    );
+    markSeen("classic:current:k");
+    cacheKorean("classic:current:k", "현재 번역입니다.", ["now"]);
+
+    clearLegacyStorageKeys();
+
+    expect(window.localStorage.getItem("enlearn.seen.v2")).toBeNull();
+    expect(window.localStorage.getItem("enlearn.kocache.v2")).toBeNull();
+    expect(seenCount()).toBe(1);
+    expect(koreanCacheCount()).toBe(1);
+  });
+
+  it("삭제가 실패해도 멈추지 않는다 — 화면 기능과 무관한 청소다", () => {
+    window.localStorage.setItem("enlearn.seen.v2", "{}");
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("SecurityError", "SecurityError");
+    });
+    expect(() => clearLegacyStorageKeys()).not.toThrow();
+    vi.spyOn(Storage.prototype, "removeItem").mockRestore();
   });
 });

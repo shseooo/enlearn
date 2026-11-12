@@ -11,6 +11,40 @@ const settings: LLMSettings = {
 };
 
 describe("SettingsTab", () => {
+  // R7-11: 키를 평문으로 노출하는 토글은 보안에 가까운 동작인데 테스트가 없었다.
+  it("API 키 입력은 처음에 가려져 있고, 표시를 누르면 평문이 된다 (R7-11)", async () => {
+    render(<SettingsTab settings={settings} onSaved={() => {}} />);
+    const user = userEvent.setup();
+    const input = screen.getByLabelText(/API Key/);
+
+    expect(input).toHaveAttribute("type", "password");
+    // 기본 상태의 버튼 라벨이 화면에 읽히는 이름과 같아야 한다(접근성).
+    await user.click(screen.getByRole("button", { name: "표시" }));
+    expect(screen.getByLabelText(/API Key/)).toHaveAttribute("type", "text");
+    expect(screen.getByRole("button", { name: "가리기" })).toBeInTheDocument();
+
+    // 되돌리면 다시 가려진다.
+    await user.click(screen.getByRole("button", { name: "가리기" }));
+    expect(screen.getByLabelText(/API Key/)).toHaveAttribute("type", "password");
+    expect(screen.getByRole("button", { name: "표시" })).toBeInTheDocument();
+  });
+
+  it("API 키에 입력한 값이 저장으로 그대로 간다", async () => {
+    const onSaved = vi.fn();
+    render(<SettingsTab settings={settings} onSaved={onSaved} />);
+    const user = userEvent.setup();
+
+    await user.clear(screen.getByLabelText(/API Key/));
+    await user.type(screen.getByLabelText(/API Key/), "sk-from-keyboard");
+    await user.click(screen.getByRole("button", { name: "저장" }));
+
+    expect(onSaved).toHaveBeenCalledWith({
+      host: settings.host,
+      model: settings.model,
+      apiKey: "sk-from-keyboard",
+    });
+  });
+
   it("저장하면 onSaved가 한 번만 불린다 (localStorage·변경 이벤트 이중 발생 방지)", async () => {
     const onSaved = vi.fn();
     render(<SettingsTab settings={settings} onSaved={onSaved} />);

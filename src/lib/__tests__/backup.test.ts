@@ -148,6 +148,25 @@ describe("백업 파일 검증", () => {
     expect(() => parseBackup("이건 json 아님")).toThrow(/올바른 JSON/);
   });
 
+  // R7-11: 파기는 "데이터가 이상하면 한국어 안내로 끝난다"는 계약 위에 서 있다.
+  // 파일 자체가 배열·숫자·문자열인 경우는 그 경로의 맨 앞이라 테스트가 없었다.
+  it("최상위가 객체가 아닌 파일은 한국어 안내로 거부한다 (R7-11)", () => {
+    for (const text of ["[]", "[{\"app\":\"enlearn\"}]", "5", '"enlearn 백업"', "null"]) {
+      let caught: unknown = null;
+      try {
+        parseBackup(text);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught, `본문: ${text}`).toBeInstanceOf(Error);
+      expect((caught as Error).message, `본문: ${text}`).toMatch(
+        /백업 파일 형식이 올바르지 않습니다/,
+      );
+      // 사용자에게는 한 줄만 보인다 — JSON 오류의 스택 조각이 섞이지 않는다.
+      expect((caught as Error).message, `본문: ${text}`).not.toMatch(/at |JSON|SyntaxError/);
+    }
+  });
+
   it("enlearn 백업이 아니면 거절한다", () => {
     expect(() => parseBackup(JSON.stringify({ app: "other", data: { log: [] } }))).toThrow(
       /enlearn 백업 파일이 아닙니다/,
@@ -245,6 +264,8 @@ describe("백업 복원", () => {
       // D4-2(R6-3): 잘린/거부된 개수도 함께 올라온다. 여기서는 모두 0이다.
       rejected: { log: 0, srs: 0, seen: 0, koreanCache: 0 },
       trimmed: { log: 0, srs: 0, seen: 0, koreanCache: 0 },
+      // R7-1: 합치기에서 밀린 항목 수. 위 항목은 모두 새로 들어왔으므로 0이다.
+      merged: { log: 0, srs: 0, seen: 0, koreanCache: 0 },
       settingsRestored: false,
       writeFailed: false,
     });

@@ -570,6 +570,68 @@ describe("chatCompletion", () => {
     expect(m).toHaveBeenCalledTimes(2);
     expect(Date.now() - started).toBeLessThan(2000);
   });
+  /*
+   * R7-10: AbortSignal.any 폴백(anySignal)은 실제 브라우저의 구버전 환경에서만 도는
+   * 코드다. jsdom에는 AbortSignal.any가 있으므로, 이 테스트들이 폴백을 강제로 탄다.
+   */
+  const RealAbortSignal = AbortSignal;
+
+  /** AbortSignal.any가 "없는" 환경을 만든다. timeout은 짧게 돌려 쓴다. */
+  function withoutAbortSignalAny(timeoutMs = 20): void {
+    vi.stubGlobal("AbortSignal", {
+      timeout: (ms: number) => RealAbortSignal.timeout(Math.min(ms, timeoutMs)),
+      any: undefined,
+    });
+  }
+
+  it("AbortSignal.any가 없어도 요청 타임아웃은 취소 문구로 끝난다 (R7-10)", async () => {
+    withoutAbortSignalAny(20);
+    const m = vi.fn().mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The request was aborted", "AbortError")),
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", m);
+
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }], { retries: 0 }),
+    ).rejects.toThrow(/응답이 늦어 요청을 취소했습니다\(120초\)/);
+    expect(m).toHaveBeenCalledTimes(1);
+  });
+
+  it("AbortSignal.any가 없어도 사용자 취소가 합성 신호로 전달되고 재시도를 멈춘다 (R7-10)", async () => {
+    withoutAbortSignalAny(600_000); // 타임아웃으로는 끝나지 않게 길게 둔다
+    const controller = new AbortController();
+    const m = vi
+      .fn()
+      .mockImplementationOnce(
+        (_url: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () =>
+              reject(new DOMException("The request was aborted", "AbortError")),
+            );
+            // 합성 신호가 사용자 신호를 따라 abort되는지가 이 테스트의 내용이다.
+            setTimeout(() => controller.abort(), 5);
+          }),
+      )
+      .mockResolvedValue(mockOkResponse({ choices: [{ message: { content: "ok" } }] }));
+    vi.stubGlobal("fetch", m);
+
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }], {
+        signal: controller.signal,
+        retries: 2,
+        retryDelayMs: 0,
+      }),
+    ).rejects.toThrow(/요청을 취소했습니다/);
+    // 취소가 합성 신호에 닿지 않았다면 세 번까지 다시 시도했을 것이다.
+    expect(m).toHaveBeenCalledTimes(1);
+    const sentSignal = (m.mock.calls[0] as [string, RequestInit])[1].signal!;
+    expect(sentSignal.aborted).toBe(true);
+  });
 });
 
 describe("evaluateFreeWriting", () => {
