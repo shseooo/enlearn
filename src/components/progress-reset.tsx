@@ -25,6 +25,14 @@ import {
  * 받은 문장 기록과 AI 한국어 번역 캐시를 보여주고 초기화할 수 있다.
  * (엉터리 번역이 한 번 캐시되면 스스로 고칠 방법이 없으므로 진입점이 필요하다)
  */
+
+/**
+ * 되돌릴 수 없는 삭제 모두에 같은 확인을 받는다(D1-1).
+ * 한 클릭으로 seen 2만 건·번역 캐시 4천 건·연습 기록·복습 큐가 사라지고,
+ * 되돌릴 수단은 사용자가 미리 내보낸 백업뿐이다.
+ */
+const CONFIRM_MESSAGE = "이 기록을 지웁니다 — 되돌릴 수 없습니다. 먼저 백업을 내보내세요. 계속할까요?";
+
 export default function ProgressReset() {
   // localStorage를 외부 스토어로 구독한다 (서버 렌더 시에는 0 스냅샷)
   const counts = useSyncExternalStore(
@@ -40,6 +48,7 @@ export default function ProgressReset() {
   const [message, setMessage] = useState<string | null>(null);
 
   function resetPractice(what: "log" | "srs" | "both") {
+    if (!window.confirm(CONFIRM_MESSAGE)) return;
     // 한 동작이 두 저장소를 바꾼다 — 백업 경로와 같은 묶음 쓰기로 알림을 한 번만 낸다(리뷰 3-14).
     batchPractice(() => {
       if (what !== "srs") clearLog();
@@ -55,6 +64,7 @@ export default function ProgressReset() {
   }
 
   function reset(lane: CorpusLane | "all", what: "seen" | "korean" | "both") {
+    if (!window.confirm(CONFIRM_MESSAGE)) return;
     batchProgress(() => {
       if (what !== "korean") resetSeen(lane === "all" ? undefined : lane);
       if (what !== "seen") clearKoreanCache(lane === "all" ? undefined : lane);

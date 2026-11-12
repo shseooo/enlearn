@@ -6,7 +6,7 @@
  * - SRS: 문장을 복습 큐에 넣고 1/3/7/21/45일 주기로 다시 낸다.
  *   "알고 있어요 / 아슬아슬 / 잊었어요" 자기 평가로 단계가 오른다. (LLM 불필요)
  */
-import type { CorpusLane } from "./types";
+import type { CorpusLane, ImportResult } from "./types";
 import { localDateString } from "./corpus";
 import { shortHash } from "./corpus-tools";
 import { safeSetItem, parseStored } from "./storage";
@@ -25,10 +25,21 @@ const LOG_KEY = "enlearn.log.v1";
 const SRS_KEY = "enlearn.srs.v1";
 const CHANGE_EVENT = "enlearn:practice-changed";
 
-/** localStorage를 보호하기 위해 두는 상한 */
-const MAX_RECORDS = 400;
+/**
+ * localStorage를 보호하기 위해 두는 상한 (D4-2로 400 → 2,000)
+ *
+ * 실측 근거(커밋된 코퍼스 문장으로 만든 실제 형태의 연습 기록 300건의 JSON):
+ *  - 1건 평균 381바이트(최대 473). 코퍼스 4,400문장의 평균 en 42.7자 · ko 22.6자.
+ *  - 기록 2,000건 ≈ 0.73MB · seen 20,000건 ≈ 0.9MB(17자 키 + ISO 시각 24자)
+ *    · 번역 캐시 4,000건 ≈ 0.4MB · 복습 큐 500건 ≈ 0.25MB → 합쳐 약 2.3MB.
+ *  localStorage 한도(약 5MB) 안에서 세 저장소를 함께 쓰되 여유를 남기는 값이다.
+ *  3,000건도 가능하지만(≈1.1MB) 쓸 때마다 통째로 직렬화하는 비용이 커진다.
+ */
+export const MAX_RECORDS = 2_000;
 const MAX_CORRECTIONS = 5;
 const MAX_TEXT = 400;
+/** 저장소 키로 쓰는 id 길이 상한(R5-4). en/ko/answer는 clip으로 Already 자르지만 id만 무제한이었다. */
+const MAX_ID_CHARS = 200;
 /** 복습 큐 상한. 이걸 넘기면 가장 낮은 단계부터 밀어낸다. */
 export const MAX_SRS = 500;
 
@@ -702,6 +713,11 @@ function sanitizeRecord(value: unknown): PracticeRecord | null {
   const lane = o.lane;
   if (!en) return null;
   if (lane !== "daily" && lane !== "classic" && lane !== "ai" && lane !== "free") return null;
+  // id는 clip 대상이 아니었다(R5-4): 수천 자 id를 저장하면 이후 모든 쓰기에서
+  // 통째로 직렬화된다. 너무 길면 화면에 보이는 문장(en) 기준으로 다시 만든다.
+  const rawId = typeof o.id === "string" ? o.id : "";
+  const id =
+    rawId && rawId.length <= MAX_ID_CHARS ? rawId : practiceId(lane, en);
   const corrections = Array.isArray(o.corrections)
     ? o.corrections
         .map((c) => {
@@ -719,7 +735,7 @@ function sanitizeRecord(value: unknown): PracticeRecord | null {
   const tsRaw = typeof o.ts === "number" ? o.ts : Number(o.ts);
   const maxTs = Date.now() + IMPORT_DATE_TOLERANCE_DAYS * 86_400_000;
   return {
-    id: typeof o.id === "string" && o.id ? o.id : practiceId(lane, en),
+    id,
     lane,
     date,
     ts: Number.isFinite(tsRaw) ? capStoredTimestamp(tsRaw, maxTs) : parseLocal(date).getTime(),
@@ -741,10 +757,12 @@ function sanitizeSrs(value: unknown): SrsItem | null {
   const lane = o.lane;
   if (!id || !due || !en || !ko) return null;
   if (lane !== "daily" && lane !== "classic") return null;
+  // 연습 기록과 같은 규칙(R5-4): 지나치게 긴 id는 문장 기준으로 다시 만든다.
+  const safeId = id.length <= MAX_ID_CHARS ? id : practiceId(lane, en);
   const stage = typeof o.stage === "number" ? o.stage : Number(o.stage);
   const lapses = typeof o.lapses === "number" ? o.lapses : Number(o.lapses);
   return {
-    id,
+    id: safeId,
     lane,
     en,
     ko,
@@ -758,11 +776,6 @@ function sanitizeSrs(value: unknown): SrsItem | null {
   };
 }
 
-/**
- * 연습 기록을 불러온다.
- * merge(기본): 같은 id·날짜는 새 값으로 바꾸고 나머지는 합친다.
- * replace: 기존 기록을 모두 지운다.
- */
 /** 큐가 상한을 넘으면 진척도가 낮은 것부터 밀어낸다 (새로 들어온 문장은 단계 0) */
 function trimSrs(queue: SrsItem[]): SrsItem[] {
   if (queue.length <= MAX_SRS) return queue;
@@ -771,39 +784,66 @@ function trimSrs(queue: SrsItem[]): SrsItem[] {
     .slice(0, MAX_SRS);
 }
 
-export function importLog(items: unknown[], replace = false): number {
+/** 기록을 날짜·시각 순으로 정렬한다(상한으로 자르는 두 경로가 같은 기준을 쓴다, R6-7). */
+function sortRecords(records: PracticeRecord[]): PracticeRecord[] {
+  return [...records].sort(
+    (a, b) => a.date.localeCompare(b.date) || a.ts - b.ts,
+  );
+}
+
+/**
+ * 연습 기록을 불러온다. 병합은 "누가 이기나"를 시각으로 정한다(D2-1):
+ * 같은 id·날짜에서는 ts가 더 최근인 값이 남고, 시각이 같으면 기존 값이 남는다.
+ * replace: 기존 기록을 모두 지운다(정렬 후 상한만큼 남긴다).
+ */
+export function importLog(items: unknown[], replace = false): ImportResult {
   const incoming = items
     .map(sanitizeRecord)
     .filter((r): r is PracticeRecord => r !== null);
+  const rejected = items.length - incoming.length;
   if (replace) {
     // 대체는 유효 항목이 0개여야 실제로 비워야 한다 (그렇지 않으면 "지웠다"가 거짓이 된다)
-    writeArray(LOG_KEY, incoming.slice(-MAX_RECORDS));
-    // 개수 상한(MAX_RECORDS)으로 잘린 경우 요청 개수가 아니라 실제로 남은 개수를
-    // 알려준다. 병합 경로와 같은 규칙(저장 후 재확인)을 쓴다 (리뷰 1-4).
-    return loadLog().length;
+    // ⚠️ 파일에 적힌 순서로 자르면 내림차순 백업에서 가장 최근 기록이 먼저 버려진다(R6-7).
+    //    병합 경로와 같은 키(date, ts)로 정렬한 뒤 뒤쪽(최신)만 남긴다.
+    const kept = sortRecords(incoming).slice(-MAX_RECORDS);
+    writeArray(LOG_KEY, kept);
+    // 개수 상한(MAX_RECORDS)으로 잘린 경우 요청 개수가 아니라 실제로 남은 개수를 알려준다.
+    const stored = loadLog().length;
+    return { stored, rejected, trimmed: incoming.length - stored };
   }
-  if (!incoming.length) return 0;
+  if (!incoming.length) return { stored: 0, rejected, trimmed: 0 };
   const byIdDate = new Map<string, PracticeRecord>();
   for (const r of loadLog()) byIdDate.set(`${r.id}|${r.date}`, r);
-  for (const r of incoming) byIdDate.set(`${r.id}|${r.date}`, r);
-  const merged = [...byIdDate.values()].sort(
-    (a, b) => a.date.localeCompare(b.date) || a.ts - b.ts,
-  );
+  for (const r of incoming) {
+    const key = `${r.id}|${r.date}`;
+    const existing = byIdDate.get(key);
+    // D2-1: 더 최근 시각이 이긴다. 시각이 같으면 기존 값(이미 화면에서 본 값)을 지킨다.
+    if (!existing || r.ts > existing.ts) byIdDate.set(key, r);
+  }
+  const merged = sortRecords([...byIdDate.values()]);
   writeArray(LOG_KEY, merged.slice(-MAX_RECORDS));
   const wanted = new Set(incoming.map((r) => `${r.id}|${r.date}`));
-  return loadLog().filter((r) => wanted.has(`${r.id}|${r.date}`)).length;
+  const stored = loadLog().filter((r) => wanted.has(`${r.id}|${r.date}`)).length;
+  // 더 최근 기존 기록에 밀린 항목은 세지 않는다 — 그것은 손실이 아니라 병합 규칙의 결과다.
+  return { stored, rejected, trimmed: incoming.length - stored };
 }
 
-/** 복습 큐를 불러온다. 병합할 때는 이미 멀리 미뤄진 쪽을 남겨 진행을 되돌리지 않는다. */
-export function importSrs(items: unknown[], replace = false): number {
+/**
+ * 복습 큐를 불러온다. 병합은 마지막 복습 시각(lastReviewed)이 더 최근인 값을 남긴다(D2-1).
+ * lastReviewed가 null(아직 복습하지 않음)은 "가장 오래된 값"으로 본다 — 결정이 명시하지 않은
+ * 자리라 여기서 규정한다: 새로 들어온 항목이 기존 진행을 되돌리려면 실제로 복습한 뒤여야 한다.
+ */
+export function importSrs(items: unknown[], replace = false): ImportResult {
   const incoming = items
     .map(sanitizeSrs)
     .filter((x): x is SrsItem => x !== null);
+  const rejected = items.length - incoming.length;
   if (replace) {
     writeArray(SRS_KEY, trimSrs(incoming));
-    return loadSrs().length;
+    const stored = loadSrs().length;
+    return { stored, rejected, trimmed: incoming.length - stored };
   }
-  if (!incoming.length) return 0;
+  if (!incoming.length) return { stored: 0, rejected, trimmed: 0 };
   const byId = new Map<string, SrsItem>();
   for (const x of loadSrs()) byId.set(x.id, x);
   for (const x of incoming) {
@@ -812,15 +852,13 @@ export function importSrs(items: unknown[], replace = false): number {
       byId.set(x.id, x);
       continue;
     }
-    const keep =
-      x.stage > existing.stage ||
-      (x.stage === existing.stage && x.due > existing.due) ||
-      (x.due === existing.due && x.lapses < existing.lapses)
-      ? x
-      : existing;
-    byId.set(x.id, keep);
+    // null은 0으로 두고 비교한다(같은 시각이면 기존 값이 이긴다).
+    const incomingTime = x.lastReviewed ? Date.parse(x.lastReviewed) : 0;
+    const existingTime = existing.lastReviewed ? Date.parse(existing.lastReviewed) : 0;
+    byId.set(x.id, incomingTime > existingTime ? x : existing);
   }
   writeArray(SRS_KEY, trimSrs([...byId.values()]));
   const ids = new Set(incoming.map((x) => x.id));
-  return loadSrs().filter((x) => ids.has(x.id)).length;
+  const stored = loadSrs().filter((x) => ids.has(x.id)).length;
+  return { stored, rejected, trimmed: incoming.length - stored };
 }

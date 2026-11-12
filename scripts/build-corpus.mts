@@ -86,13 +86,34 @@ const flag = (name: string, fallback = ""): string => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 
+/**
+ * 이 파일을 직접 실행한 것인지 (테스트에서는 순수 함수·실행 함수만 import한다).
+ * 아래에서 한 번 더 계산하지만, 인자 검증이 모듈 평가 시점에 돌아가므로 여기서도 본다.
+ */
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+
+/**
+ * 인자 오류는 한국어 안내 한 줄로 끝난다(R6-9). 이 검증은 모듈 평가 시점에 돌아
+ * `main().catch`를 거치지 않는다 — 그대로 두면 사용자는 안내 뒤에 스택 트레이스를 본다.
+ * 테스트 import(imported)에서는 던진다: 프로세스를 죽이는 것은 CLI만 한다.
+ */
+function failUsage(message: string): never {
+  if (!invokedDirectly) throw new Error(message);
+  console.error(`빌드 실패: ${message}`);
+  console.error(
+    "사용: npm run corpus -- [--lane=daily|classic|all] [--per-book=N] [--daily-cap=N] " +
+      "[--classic-cap=N] [--batch=N] [--concurrency=N] [--offline] [--llm] [--force]",
+  );
+  process.exit(1);
+}
+
 const LANES: CorpusLane[] = (() => {
   const lane = flag("lane", "all");
   if (lane === "all") return ["daily", "classic"];
   if (lane === "daily" || lane === "classic") return [lane];
-  throw new Error(
-    `--lane 은 daily | classic | all 중 하나여야 합니다. (받은 값: ${lane})`,
-  );
+  failUsage(`--lane 은 daily | classic | all 중 하나여야 합니다. (받은 값: ${lane})`);
 })();
 const OFFLINE = argv.includes("--offline");
 const WITH_LLM = argv.includes("--llm");
@@ -104,9 +125,7 @@ const positiveInt = (name: string, fallback: number): number => {
   const raw = flag(name, String(fallback));
   const n = Number(raw);
   if (!Number.isInteger(n) || n <= 0) {
-    throw new Error(
-      `--${name} 은 0보다 큰 정수여야 합니다. (받은 값: ${raw})`,
-    );
+    failUsage(`--${name} 은 0보다 큰 정수여야 합니다. (받은 값: ${raw})`);
   }
   return n;
 };
@@ -179,8 +198,9 @@ export function isCompleteGutenbergText(buf: Buffer): boolean {
   return hasGutenbergEndMarker(decodeBytes(buf));
 }
 
-/** 원본은 캐시에 저장해 두므로 재실행 시 네트워크를 쓰지 않는다. */
-async function cachedBytes(
+/** 원본은 캐시에 저장해 두므로 재실행 시 네트워크를 쓰지 않는다.
+ * (테스트는 fetch를 주입해 이 경로를 확인한다 — R6-8) */
+export async function cachedBytes(
   name: string,
   urls: string[],
   complete?: (buf: Buffer) => boolean,
@@ -204,6 +224,15 @@ async function cachedBytes(
   for (const url of urls) {
     try {
       const buf = await fetchBytes(url);
+      // 막 내려받은 바이트도 같은 검사로 본다(R5-1/R6-8). 여기만 걸러야 잘린 원본이
+      // 캐시에도 들어가지 않고, 이번 빌드의 buildClassic()에도 흐르지 않는다.
+      // 원본 서버가 잘린 파일을 준 경우가 이 경로로 들어온다.
+      if (complete && !complete(buf)) {
+        throw new Error(
+          `${name}의 원본이 완성본이 아닙니다(끝 마커 없음) — ` +
+            `잘린 원본은 캐시에 쓰지 않습니다. 다른 주소도 같은지 확인하세요.`,
+        );
+      }
       // 제자리 덮어쓰기는 잘린 파일을 남긴다. 그 파일이 "완성된 원본"으로 재사용된다(R4-1).
       writeAtomic(path, buf);
       await sleep(1200); // 사이트 배려: 요청 사이에 쉬는 시간
@@ -1026,10 +1055,6 @@ async function main(): Promise<void> {
 }
 
 // 이 파일을 직접 실행할 때만 빌드를 돌린다 (테스트에서는 순수 함수만 가져온다)
-const invokedDirectly =
-  process.argv[1] !== undefined &&
-  pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
-
 if (invokedDirectly) {
   // 예외를 그대로 두면 unhandled rejection + 스택 트레이스로 끝난다.
   // 사용자에게 필요한 것은 원인과 다음 조치 한 줄이다(리뷰 2-6).

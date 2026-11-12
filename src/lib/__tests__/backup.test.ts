@@ -15,6 +15,7 @@ import {
   clearSrs,
   dueCount,
   loadLog,
+  MAX_RECORDS,
   logPractice,
   practiceStats,
   reviewItems,
@@ -241,6 +242,9 @@ describe("백업 복원", () => {
       srs: 1,
       seen: 1,
       koreanCache: 1,
+      // D4-2(R6-3): 잘린/거부된 개수도 함께 올라온다. 여기서는 모두 0이다.
+      rejected: { log: 0, srs: 0, seen: 0, koreanCache: 0 },
+      trimmed: { log: 0, srs: 0, seen: 0, koreanCache: 0 },
       settingsRestored: false,
       writeFailed: false,
     });
@@ -259,6 +263,52 @@ describe("백업 복원", () => {
     expect(saved).toContain("backup.example.com");
     // 백업에 키는 없으므로 지금의 키가 그대로 남는다
     expect(saved).toContain("sk-super-secret-value");
+  });
+
+  // D4-2(R6-3): 저장소 상한으로 잘린 개수가 사용자에게 보여야 한다.
+  it("복원은 상한으로 잘린 개수를 따로 센다 (D4-2)", () => {
+    const log = Array.from({ length: MAX_RECORDS + 50 }, (_, i) => ({
+      date: `2026-01-0${(i % 5) + 1}`,
+      lane: "classic",
+      en: `Bulk restore sentence ${i}.`,
+      ko: `대량 복원 문장 ${i}.`,
+      answer: `answer ${i}`,
+      score: 50,
+      corrections: [],
+    }));
+    const file = parseBackup(
+      JSON.stringify({
+        app: BACKUP_APP,
+        version: 1,
+        data: { log, srs: [], seen: {}, koreanCache: {} },
+      }),
+    );
+    const result = restoreBackup(file);
+    expect(result.log).toBe(MAX_RECORDS);
+    expect(result.trimmed.log).toBe(50);
+    expect(result.rejected.log).toBe(0);
+    expect(loadLog()).toHaveLength(MAX_RECORDS);
+
+    // 형식이 맞지 않는 항목은 거부 개수로 올라온다.
+    const junk = parseBackup(
+      JSON.stringify({
+        app: BACKUP_APP,
+        version: 1,
+        data: {
+          log: [
+            { date: "2026-01-02", lane: "classic", score: 50 }, // 원문 없음
+            { date: "not-a-date", lane: "classic", en: "Junk row two.", answer: "x", score: 50 },
+            { date: "2026-01-03", lane: "classic", en: "Good row.", answer: "x", score: 50 },
+          ],
+          srs: [],
+          seen: {},
+          koreanCache: {},
+        },
+      }),
+    );
+    const junkResult = restoreBackup(junk, true);
+    expect(junkResult.log).toBe(1);
+    expect(junkResult.rejected.log).toBe(2);
   });
 
   it("대체: 기존 기록·큐·캐시를 지우고 채운다", () => {

@@ -159,6 +159,41 @@ describe("isPracticeSentence", () => {
   it("비영어 문자가 섞인 문장은 거른다", () => {
     expect(isPracticeSentence("He said \u3042\u308a\u304c\u3068\u3046 and left.")).toBe(false);
   });
+
+  // R6-13(resolved.md "hasVerb 필터"): 커밋된 코퍼스에 남은 잡음 두 종류를 따로 거른다.
+  it("문장 안·끝에 붙은 장 제목은 거른다 (R6-13)", () => {
+    for (const noisy of [
+      "Glinda The Good Witch Grants Dorothy's Wish Chapter XXIV.",
+      "The Garden of Live Flowers CHAPTER III.",
+      "How Dorothy Saved the Scarecrow Chapter IV.",
+      // 앞두("Chapter …")만 걸러던 이전 규칙은 문장 중간에 붙은 제목을 놓친다.
+      "The Story Chapter IV. It was a long day and everyone rested.",
+    ]) {
+      expect(isPracticeSentence(noisy)).toBe(false);
+    }
+    // 정상 문장에서의 "book I" 언급은 잡지 않는다(한 글자 로마숫자는 문장 끝에서만 인정).
+    expect(
+      isPracticeSentence("He opened the book I had given him that winter, and read it twice."),
+    ).toBe(true);
+  });
+
+  it("영어 기능어가 없는 비영어 문장은 거른다 (R6-13)", () => {
+    expect(
+      isPracticeSentence(
+        "Duplex libelli dos est: quod risum movet, Et quod prudenti vitam consilio monet.",
+      ),
+    ).toBe(false);
+    expect(
+      isPracticeSentence("The queen was very angry and she shouted at the soldiers."),
+    ).toBe(true);
+  });
+
+  it("축약형은 기능어로 인정한다 (R6-13)", () => {
+    // "there's"처럼 어절 하나에 붙은 기능어도 비영어 판정에서 넘어간다.
+    expect(isPracticeSentence("Well, there's one thing pretty sure, said the old woman.")).toBe(
+      true,
+    );
+  });
 });
 
 describe("난이도", () => {
@@ -316,12 +351,16 @@ describe("pickHints", () => {
     expect(hints).not.toContain("123");
   });
 
-  it("seed가 다르면 상위 후보 안에서 다른 단어도 고른다", () => {
+  // R6-14: seed 인자와 회전 로직은 죽은 코드였다(유일한 호출부는 인자 두 개로 부른다).
+  // 힌트는 코퍼스 키·캐시와 짝을 이루는 값이라 호출마다 같아야 한다.
+  it("힌트는 seed 없이 결정론적이다 (R6-14)", () => {
     const sentence =
       "The golden rabbit opened the little door and ran through the secret garden.";
-    const a = pickHints(sentence, stats, 0);
-    const b = pickHints(sentence, stats, 5);
-    expect(a).not.toEqual(b);
+    const a = pickHints(sentence, stats);
+    const b = pickHints(sentence, stats);
+    expect(a).toEqual(b);
+    expect(a.length).toBeGreaterThan(0);
+    expect(pickHints.length).toBe(2); // (sentence, stats) — seed 인자는 없다
   });
 });
 
@@ -349,11 +388,26 @@ describe("키·어절 계산", () => {
     expect(words("Be off, home!")).toEqual(["Be", "off", "home"]);
   });
 
-  it("entryKey는 레인을 포함하고 정규화 문장의 짧은 해시다", () => {
+  it("entryKey는 레인을 포함하고 정규화 문장의 64비트 해시다", () => {
     const key = entryKey({ lane: "classic", en: "The  rabbit RAN!" });
     expect(key).toBe(entryKey({ lane: "classic", en: "the rabbit ran" }));
     expect(key.startsWith("classic:")).toBe(true);
     expect(key.length).toBeLessThan(40);
+    // 64비트(R6-15): 저장소 키의 해시 조각은 16자의 16진수다.
+    expect(key).toMatch(/^classic:\d+:[0-9a-f]{16}$/);
+  });
+
+  it("entryKey는 호출마다 같은 값을 준다 — seen·번역 캐시의 키다 (R6-15)", () => {
+    const sentence = "There was nothing so very remarkable in that.";
+    const first = entryKey({ lane: "classic", en: sentence });
+    for (let i = 0; i < 5; i++) {
+      expect(entryKey({ lane: "classic", en: sentence })).toBe(first);
+    }
+    // 앞부분이 같은 다른 문장은 다른 키를 받는다(32비트 해시는 4,400문장에서
+    // 충돌 기대값 ≈ 0.2%였다 — 64비트로 넓힌 이유).
+    expect(entryKey({ lane: "classic", en: sentence })).not.toBe(
+      entryKey({ lane: "classic", en: `${sentence} And then it stopped.` }),
+    );
   });
 
   it("앞부분이 같은 긴 문장도 다른 키를 준다 (120자 잘림 충돌 방지)", () => {

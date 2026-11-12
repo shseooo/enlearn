@@ -17,6 +17,30 @@ const LETTER = /\p{L}/u;
 const DIGIT = /[0-9]/;
 
 /**
+ * 기준 허용 목록 (D4-3): check · audit · 커밋 데이터 테스트가 모두 이 하나를 읽는다.
+ * 사본이 흩어지면 "check는 통과하고 audit는 죽는" 불일치가 되돌아온다(R4-11/R6-12).
+ * `--allow=`는 여기에 더하는 용도로 check·audit 둘 다에 남긴다.
+ */
+export const BASE_ALLOWED_LATIN: readonly { word: string; because: string }[] = [
+  // Tatoeba 일상 회화 번역에 실제로 들어 있는 고유명사·약어 (동화 레인에서는 쓰이지 않는다)
+  { word: "Tom", because: "Tatoeba 번역의 인명 'Tom'" },
+  { word: "Mary", because: "Tatoeba 번역의 인명 'Mary'" },
+  { word: "TV", because: "'TV를 본다'는 한국어에서 굳어진 약어" },
+  { word: "DNA", because: "과학 번역에서 그대로 쓰는 약어" },
+  { word: "MRI", because: "병원 검사명을 한국어 문장에 그대로 쓴다" },
+  { word: "A", because: "'A 학점'·'A 형' 같은 등급/형용 표기" },
+  { word: "B", because: "'B 형'·'B 열' 같은 등급/번호 표기" },
+  { word: "C", because: "'C 점수' 같은 등급 표기" },
+];
+
+/** 허용 목록을 `--allow=`와 합치는 데 쓰는 Set 형태. */
+export function allowedLatinSet(extra: Iterable<string> = []): Set<string> {
+  const set = new Set<string>(BASE_ALLOWED_LATIN.map((entry) => entry.word));
+  for (const word of extra) if (word) set.add(word);
+  return set;
+}
+
+/**
  * 한글이 아닌 문자 조각을 모아 돌려준다. 허용 목록에 정확히 일치하는 조각은 넘긴다.
  * 예: "이 TV 프로그램은 재밌어요" → 허용 목록이 비면 ["TV"]
  *

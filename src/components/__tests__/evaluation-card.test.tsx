@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import EvaluationCard from "../evaluation-card";
@@ -175,5 +175,42 @@ describe("EvaluationCard — 추가 질문 히스토리 격리 (리뷰 3-3)", ()
 
     expect(screen.queryByText("늦게 도착한 답변")).not.toBeInTheDocument();
     expect(screen.getByText("이미 다른 문장 평가")).toBeInTheDocument();
+  });
+});
+
+/*
+ * R6-19(리뷰 5): 개선 표현을 옮겨 적는 복사 단추가 테스트에서 한 번도 눌리지 않았다.
+ * 클립보드가 차단된 브라우저(권한 거부·http)에서는 조용히 넘어가야 한다.
+ */
+describe("EvaluationCard — 개선 표현 복사 (R6-19)", () => {
+  it("복사하면 더 나은 표현이 클립보드로 가고 잠시 확인 표시를 한다", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+    render(<EvaluationCard result={baseResult} settings={settings} context={context} />);
+    // userEvent.setup()이 자기 클립보드 목을 navigator.clipboard에 설치하므로,
+    // 이 테스트만 fireEvent로 누른다(우리가 심은 writeText를 보고 싶다).
+    fireEvent.click(screen.getByRole("button", { name: "복사" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(writeText).toHaveBeenCalledWith("I agree with you.");
+    expect(await screen.findByRole("button", { name: "복사됨 ✓" })).toBeInTheDocument();
+  });
+
+  it("클립보드가 차단된 환경에서는 조용히 넘어간다", async () => {
+    const writeText = vi.fn().mockRejectedValue(new DOMException("NotAllowedError", "NotAllowedError"));
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+    render(<EvaluationCard result={baseResult} settings={settings} context={context} />);
+    fireEvent.click(screen.getByRole("button", { name: "복사" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("button", { name: "복사" })).toBeInTheDocument();
+    expect(screen.queryByText("복사됨 ✓")).not.toBeInTheDocument();
   });
 });

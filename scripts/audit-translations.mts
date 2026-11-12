@@ -8,16 +8,19 @@
  *  - 모양: 지나치게 짧거나 길거나 문장 부호로 끝나지 않는 경우 (경고만 한다)
  *  - 중복 번역: 같은 한국어가 서로 다른 두 문장에 붙은 경우 — worklist 행이 어긋난 신호다
  *
- * 사용: node scripts/audit-translations.mts
+ * 사용: node scripts/audit-translations.mts [--allow=허용단어]
  * 종료 코드: 누역·빌드 미반영·언어 오염이 있으면 1. 모양 경고와 중복은 경고만 출력하고 0으로 끝난다
  * ( 모양은 원문에 따라 정상이 있을 수 있어 판단을 사람에게 맡긴다.)
+ *
+ * 언어 오염 판정은 check·커밋 데이터 테스트와 같은 기준 허용 목록(scripts/lib/foreign-text.ts)을
+ * 쓴다 — 목록이 갈라지면 "check는 통과하고 audit는 죽는" 애매한 상태가 된다(R4-11/R6-12).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { CorpusEntry } from "../src/lib/types.ts";
 
-import { foreignLetterRuns, hasHangul } from "./lib/foreign-text.ts";
+import { allowedLatinSet, foreignLetterRuns, hasHangul } from "./lib/foreign-text.ts";
 // 번역 캐시의 키 규칙은 빌더와 반드시 같아야 하므로, 같은 normalizeKey를 import한다.
 import { normalizeKey } from "../src/lib/corpus-tools.ts";
 
@@ -30,6 +33,22 @@ type TranslationCache = Record<string, { ko?: string }>;
 /** 최소·최대 길이. 원문이 두 문장이 이어진 경우를 감안해 위쪽은 넉넉하게 둔다. */
 const MIN_KO_CHARS = 6;
 const MAX_KO_CHARS = 140;
+
+/** --allow= 기준 목록에 더하는 허용 단어 (D4-3) */
+function parseAllow(argv: string[]): Set<string> {
+  const extra: string[] = [];
+  for (const arg of argv) {
+    if (arg.startsWith("--allow=")) {
+      for (const word of arg.slice("--allow=".length).split(",")) if (word) extra.push(word);
+    } else {
+      console.error(`알 수 없는 인자: ${arg} — 사용: node scripts/audit-translations.mts [--allow=허용단어]`);
+      process.exit(2);
+    }
+  }
+  return allowedLatinSet(extra);
+}
+
+const ALLOWED = parseAllow(process.argv.slice(2));
 
 function readJson<T>(path: string, hint: string): T {
   if (!existsSync(path)) {
@@ -95,7 +114,7 @@ for (const entry of corpus.entries) {
     continue;
   }
 
-  const foreign = foreignLetterRuns(ko);
+  const foreign = foreignLetterRuns(ko, ALLOWED);
   if (foreign.length > 0 || !hasHangul(ko)) {
     contaminated++;
     console.log(`언어 오염 [${foreign.join(" | ")}]: ${ko.slice(0, 80)}`);

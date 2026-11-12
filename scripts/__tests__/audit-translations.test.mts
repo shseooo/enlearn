@@ -48,8 +48,8 @@ function workspace(rows: Row[], cache: unknown = {}): string {
   return root;
 }
 
-function audit(root: string): { status: number | null; out: string } {
-  const result = spawnSync(process.execPath, [SCRIPT], {
+function audit(root: string, args: string[] = []): { status: number | null; out: string } {
+  const result = spawnSync(process.execPath, [SCRIPT, ...args], {
     cwd: root,
     encoding: "utf8",
   });
@@ -61,6 +61,37 @@ afterAll(() => {
 });
 
 describe("audit-translations.mts — 마지막 게이트 (리뷰 3-3)", () => {
+  /*
+   * D4-3(R6-12): 커밋된 데이터에 이미 있는 Tom/Mary 때문에 check-translations는
+   * --allow로 넘기고 audit는 종료 코드 1로 죽는 불일치가 있었다. 두 스크립트가
+   * 같은 기준 목록(scripts/lib/foreign-text.ts)을 쓰면서 감사도 통과한다.
+   */
+  it("기준 허용 목록의 고유명사는 감사도 통과한다 (D4-3)", () => {
+    const root = workspace([
+      { en: "Tom looks very sick.", ko: "Tom은 많이 아파 보여." },
+      { en: "Mary opened the window slowly.", ko: "Mary는 창문을 천천히 열었다." },
+    ]);
+    const r = audit(root);
+    expect(r.out, r.out).not.toContain("섞임");
+    expect(r.status).toBe(0);
+  });
+
+  it("audit에도 --allow로 추가 허용을 받을 수 있다 (D4-3)", () => {
+    const root = workspace([
+      { en: "The DVR played a funny film.", ko: "그 DVR 영상은 아주 재밌었어요." },
+    ]);
+    expect(audit(root).status).toBe(1);
+    const allowed = audit(root, ["--allow=DVR"]);
+    expect(allowed.out, allowed.out).toContain("감사 통과");
+    expect(allowed.status).toBe(0);
+
+    // 잘못된 인자는 사용법(종료 코드 2)으로 알린다 — 스택 트레이스를 보여주지 않는다.
+    const bad = audit(root, ["--nope"]);
+    expect(bad.status).toBe(2);
+    expect(bad.out).toContain("알 수 없는 인자");
+    expect(bad.out).not.toMatch(/^\s+at /m);
+  });
+
   it("한국어가 없는 문장이 있으면 누역으로 잡히고 종료 코드 1", () => {
     const root = workspace([
       { en: "The rabbit hopped away quickly.", ko: "토끼가 잽싸게 뛰어가 버렸다." },

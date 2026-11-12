@@ -14,7 +14,8 @@
     "check": "npm run typecheck && npm run lint && npm test",
     "corpus": "node scripts/build-corpus.mts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage"
   },
   "dependencies": {
     "next": "16.4.2",
@@ -29,6 +30,7 @@
     "@types/node": "^24.19.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitest/coverage-v8": "^5.1.0",
     "eslint": "^9",
     "eslint-config-next": "16.4.2",
     "jsdom": "^30.1.3",

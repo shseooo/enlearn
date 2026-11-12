@@ -87,10 +87,16 @@ export default function BackupCard() {
       // "기존 기록을 대체했습니다"를 그대로 보여주면 사용자는 없는 결과를 믿는다(리뷰 2-4).
       setMessage(null);
       setError(
-        "일부 저장에 실패했습니다 — 용량을 정리한 뒤 다시 시도하세요. 백업 내용은 그대로입니다.",
+        "일부 저장에 실패했습니다 — 용량을 정리한 뒤 다시 시도하세요. 올려준 백업 파일은 그대로지만, " +
+          "저장소는 일부만 바뀔 수 있습니다.",
       );
       return;
     }
+    // D4-2: "기록 400개"가 "400개만 들어가고 나머지는 버려졌다"와 구분되지 않았다.
+    const sum = (counts: typeof result.trimmed) =>
+      counts.log + counts.srs + counts.seen + counts.koreanCache;
+    const trimmed = sum(result.trimmed);
+    const rejected = sum(result.rejected);
     setMessage(
       [
         `기록 ${result.log}개`,
@@ -98,6 +104,8 @@ export default function BackupCard() {
         `받은 문장 ${result.seen}개`,
         `번역 캐시 ${result.koreanCache}개`,
         result.settingsRestored ? "연결 설정" : null,
+        trimmed > 0 ? `${trimmed}건은 저장소 상한으로 제외` : null,
+        rejected > 0 ? `${rejected}건은 형식이 맞지 않아 제외` : null,
       ]
         .filter(Boolean)
         .join(" · ") + (replace ? " — 기존 기록을 대체했습니다" : " 을(를) 합쳤습니다"),
@@ -112,6 +120,10 @@ export default function BackupCard() {
         연습 기록과 복습 큐는 이 브라우저에만 있습니다. 다른 기기·브라우저로
         옮기려면 내보내기를, 되돌리려면 가져오기를 씁니다.{" "}
         <strong className="font-semibold text-slate-700">API 키는 백업에 들어가지 않습니다.</strong>
+      </p>
+      <p className="mb-3 text-xs leading-relaxed text-slate-500">
+        합치기는 더 최근 기록을 남깁니다. 백업 내용을 그대로 되돌리려면{" "}
+        『기존 기록을 지우고 대체』를 사용하세요.
       </p>
 
       <div className="mb-3 flex flex-wrap items-center gap-2">

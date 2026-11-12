@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProgressReset from "../progress-reset";
 import {
   loadLog,
@@ -21,6 +21,12 @@ const classicEntry = { lane: "classic" as const, en: "Once there was a king." };
 
 beforeEach(() => {
   window.localStorage.clear();
+  // D1-1: 모든 삭제 버튼이 window.confirm을 거친다. 아래 테스트는 "확인함"을 기본으로 한다.
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("ProgressReset", () => {
@@ -193,5 +199,96 @@ describe("ProgressReset", () => {
     // 화면 설명("위의 받은 문장 기록과 별개")대로, 다른 저장소는 그대로다
     expect(seenCount()).toBe(1);
     expect(koreanCacheCount()).toBe(1);
+  });
+});
+
+/*
+ * D1-1(R6-1): 되돌릴 수 없는 삭제 버튼 일곱 개에 확인 절차가 없었다.
+ * 한 클릭으로 seen·번역 캐시·연습 기록·복습 큐가 사라지고 되돌릴 수단이 없다.
+ */
+describe("ProgressReset — 파괴적 삭제 확인 (D1-1)", () => {
+  const DESTRUCTIVE_BUTTONS: RegExp[] = [
+    /💬 회화 기록 지우기/,
+    /📖 동화 기록 지우기/,
+    /🔄 한국어 번역 캐시 지우기/,
+    /전체 초기화/,
+    /🗑 연습 기록 지우기/,
+    /🗑 복습 큐 비우기/,
+    /연습 기록 \+ 복습 큐 초기화/,
+  ];
+
+  /** 모든 저장소를 채운다 — 취소를 눌렀을 때는 하나도 줄면 안 된다. */
+  function seedEveryStore(): void {
+    markSeen(entryKey(dailyEntry));
+    markSeen(entryKey(classicEntry));
+    cacheKorean(entryKey(classicEntry), "왕이 하나 살았습니다.", ["king"]);
+    logPractice({
+      lane: "classic",
+      en: "A stored sentence for the confirm test.",
+      ko: "확인 테스트용 문장.",
+      answer: "an attempt",
+      score: 60,
+      corrections: [],
+    });
+  }
+
+  const storeCounts = () => ({
+    seen: seenCount(),
+    korean: koreanCacheCount(),
+    log: loadLog().length,
+    srs: srsCount(),
+  });
+
+  it("확인 창을 취소하면 어떤 저장소도 건드리지 않는다", async () => {
+    seedEveryStore();
+    const before = storeCounts();
+    expect(before.seen).toBe(2);
+    expect(before.korean).toBe(1);
+    expect(before.log).toBe(1);
+    expect(before.srs).toBe(1);
+
+    vi.mocked(window.confirm).mockReturnValue(false);
+
+    for (const button of DESTRUCTIVE_BUTTONS) {
+      const view = render(<ProgressReset />);
+      const user = userEvent.setup();
+      await screen.findByRole("heading", { name: "연습 기록" });
+      await user.click(screen.getByRole("button", { name: button }));
+
+      expect(storeCounts(), `버튼: ${button}`).toEqual(before);
+      view.unmount();
+      expect(window.confirm, `버튼: ${button}`).toHaveBeenCalledTimes(1);
+      vi.mocked(window.confirm).mockClear();
+    }
+  });
+
+  it("확인 문구는 되돌릴 수 없고 백업부터 내보내라고 말한다", async () => {
+    render(<ProgressReset />);
+    const user = userEvent.setup();
+    await screen.findByRole("heading", { name: "연습 기록" });
+
+    await user.click(screen.getByRole("button", { name: /전체 초기화/ }));
+
+    const [prompt] = vi.mocked(window.confirm).mock.calls;
+    expect(String(prompt)).toContain("되돌릴 수 없습니다");
+    expect(String(prompt)).toContain("백업");
+  });
+
+  it("확인하면 일곱 버튼 모두 실제로 지운다", async () => {
+    for (const button of DESTRUCTIVE_BUTTONS) {
+      window.localStorage.clear();
+      seedEveryStore();
+
+      const view = render(<ProgressReset />);
+      const user = userEvent.setup();
+      await screen.findByRole("heading", { name: "연습 기록" });
+      await user.click(screen.getByRole("button", { name: button }));
+
+      const after = storeCounts();
+      view.unmount();
+      const cleared =
+        after.seen < 2 || after.korean < 1 || after.log < 1 || after.srs < 1;
+      expect(cleared, `버튼: ${button}`).toBe(true);
+    }
   });
 });

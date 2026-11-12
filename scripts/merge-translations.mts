@@ -5,12 +5,15 @@
  * 따라서 캐시를 채워 두면 다음 빌드는 LLM 요청을 하나도 보내지 않고 이 번역을 그대로 쓴다.
  *   ENLEARN_LLM_HOST=... npm run corpus -- --lane=classic --offline --llm
  *
- * 원고 형식
- *  - 한 줄에 한 문장, worklist와 같은 순서.
- *  - 각 줄 앞에 worklist 행 번호와 탭을 붙인다 → 병합할 때 번호로 대응을 확인한다.
- *      505\t두꺼비는 그냥 마음을 놓았다.
- *    번호가 한 줄이라도 어긋나면 파일 전체를 거부한다(순서가 밀리면 모든 번역이 엉뚱한 문장에 붙는다).
+ * 원고 형식 (D3-2 — 두 칸짜리 옛 형식은 받지 않는다)
+ *  - 한 줄에 한 문장, worklist와 같은 순서:
+ *      <worklist 행 번호(0-based)><TAB><원문 앞부분><TAB><번역>
+ *      505\tThe Rabbit thought about it for a whi\t토끼는 한동안 생각했다.
+ *  - dump-untranslated.mts가 뽑는 .corpus-cache/manuscript.tsv가 같은 틀이다.
+ *  - 번호가 한 줄이라도 어긋나면 파일 전체를 거부한다(순서가 밀리면 모든 번역이 엉뚱한 문장에 붙는다).
  *    번호가 없는 줄도 거부한다 — 빈 줄·탭 대신 쓴 공백은 순서를 밀지만 확인할 방법이 없다(리뷰 3-2).
+ *  - 원문 앞부분은 worklist의 en과 대조한다. 두 줄을 맞바꾸거나 같은 번호를 이어 붙여
+ *    순서를 다시 써도 번호만 맞으면 모든 번역이 엉뚱한 문장에 붙고 그대로 남는다(R6-4).
  *  - 파일 인자에는 시작 위치를 붙인다: <파일>#<worklist 시작 행(0-based)>
  *
  * 사용:
@@ -67,11 +70,42 @@ function readWorklist(): WorklistRow[] {
     });
 }
 
-/** 원고 한 줄 → { worklist 번호, 번역 }. 번호가 없으면 null. */
-function parseManuscriptLine(line: string): { rowNumber: number | null; ko: string } {
-  const match = line.match(/^(\d+)\t(.*)$/);
-  if (match) return { rowNumber: Number(match[1]), ko: match[2].trim() };
-  return { rowNumber: null, ko: line };
+/**
+ * 원고 한 줄 → { worklist 번호, 원문 앞부분, 번역 }.
+ * 번호가 없거나 컬럼이 세 개가 아니면 null 표기로 처리해 호출자가 거부 사유를 말한다.
+ */
+type ManuscriptLine = {
+  rowNumber: number | null;
+  prefix: string;
+  ko: string;
+  columns: number;
+};
+
+function parseManuscriptLine(line: string): ManuscriptLine {
+  const columns = line.split("\t");
+  const hasNumber = /^\d+$/.test(columns[0]);
+  return {
+    rowNumber: hasNumber ? Number(columns[0]) : null,
+    prefix: (columns[1] ?? "").trim(),
+    ko: columns.slice(2).join("\t").trim(),
+    columns: columns.length,
+  };
+}
+
+/** 원문 앞부분 대조: 대소문자·연속 공백을 무시하고, worklist 원문의 접두어인지 본다. */
+function normalizeForPrefix(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * 원고에 적힌 "원문 앞부분"이 worklist의 en과 같은 문장을 가리키는지 본다.
+ * 너무 짧은 조각("a" 같은)은 대조로 의미가 없다 — dump가 쓰는 접두어는 40자(R6-4).
+ */
+function prefixMatches(expected: string, prefix: string): boolean {
+  const p = normalizeForPrefix(prefix);
+  const e = normalizeForPrefix(expected);
+  if (p.length < Math.min(8, e.length)) return false;
+  return e.startsWith(p);
 }
 
 /** "<파일>#<시작행>" 인자를 해석한다. */
@@ -88,7 +122,7 @@ function parseArg(arg: string, worklistSize: number): { path: string; offset: nu
 }
 
 /** 원고 파일을 읽는다. 경로 오타에서 스택 트레이스를 보여주지 않는다(R4-2). */
-function readManuscript(path: string): { rowNumber: number | null; ko: string }[] {
+function readManuscript(path: string): ManuscriptLine[] {
   // check-translations.mts와 같은 문장: 사람은 "어떤 파일이 없는지" 먼저 알아야 한다.
   if (!existsSync(path)) {
     console.error(
@@ -104,21 +138,13 @@ function readManuscript(path: string): { rowNumber: number | null; ko: string }[
     .map(parseManuscriptLine);
 }
 
-const rows = readWorklist();
-// 빌더와 같은 읽기 규칙: 손상된 캐시는 조용히 {}로 바꾸지 않고 멈춘다(R1-3).
-const cache: Record<string, CacheEntry> = readJsonCache<Record<string, CacheEntry>>(
-  CACHE_FILE,
-  "번역 재사용 캐시(.corpus-cache/translations.json)",
-  {},
-);
-
 let added = 0;
 let overwritten = 0;
 let skipped = 0;
 
 /**
- * 원고 한 파일을 캐시에 합친다. 번호 어긋남은 그 자리에서 거부한다.
- * (본문은 예전과 같고, 예상 밖 오류를 한 줄 안내로 끝내려고 함수로 묶었다 — 리뷰 4-2)
+ * 원고 한 파일을 캐시에 합친다. 번호 어긋남·원문 앞부분 불일치는 그 자리에서 거부한다.
+ * (예상 밖 오류를 한 줄 안내로 끝내려고 함수로 묶었다 — 리뷰 4-2)
  */
 function mergeOne(
   arg: string,
@@ -128,7 +154,7 @@ function mergeOne(
   const { path, offset } = parseArg(arg, rows.length);
   const manuscript = readManuscript(path)
 
-  // 줄에 적힌 번호가 작업 목록 위치와 같은지 확인한다.
+  // 줄에 적힌 번호가 작업 목록 위치와 같은지, 원문 앞부분이 같은 문장을 가리키는지 확인한다.
   manuscript.forEach((line, i) => {
     if (line.rowNumber === null) {
       // 빈 줄을 지웠으니 "번호 없는 줄만 믿는다"로는 원고 중간 빈 줄 한 줄이
@@ -144,6 +170,23 @@ function mergeOne(
       console.error(
         `${path} ${i + 1}번째 줄: 예상 번호는 ${offset + i}인데 ${line.rowNumber}라고 적혀 있습니다. ` +
           `순서가 어긋났으므로 파일을 통째로 거부합니다.`,
+      );
+      process.exit(1);
+    }
+    if (line.columns < 3) {
+      // 옛 형식(<번호>\t<번역>)은 여기서 받지 않는다(D3-2: 호환 없음).
+      console.error(
+        `${path} ${i + 1}번째 줄에 컬럼이 ${line.columns}개입니다. 원고 형식은 ` +
+          `<번호>\t<원문 앞부분>\t<번역> 세 칸입니다(dump-untranslated.mts가 뽑는 manuscript.tsv를 쓰세요).`,
+      );
+      process.exit(1);
+    }
+    const row = rows[offset + i];
+    if (row && !prefixMatches(row.en, line.prefix)) {
+      console.error(
+        `${path} ${i + 1}번째 줄: 원문 앞부분이 worklist와 다릅니다. ` +
+          `원고에는 "${line.prefix.slice(0, 40)}", worklist에는 "${row.en.slice(0, 40)}" — ` +
+          `두 줄이 맞바뀌었거나 순서가 다시 쓰였을 수 있어 파일을 통째로 거부합니다.`,
       );
       process.exit(1);
     }
@@ -180,20 +223,42 @@ function mergeOne(
   console.log(`  ${path} +${manuscript.length}줄 (작업 목록 ${offset + 1}~${offset + manuscript.length})`);
 }
 
+function main(): void {
+  const files = process.argv.slice(2);
+  if (files.length === 0) {
+    console.error(
+      "사용: node scripts/merge-translations.mts <원고 파일>#<시작 행> [<원고 파일>#<시작 행> …] " +
+        "(원고 틀은 node scripts/dump-untranslated.mts로 뽑습니다)",
+    );
+    process.exit(2);
+  }
+  const rows = readWorklist();
+  // 빌더와 같은 읽기 규칙: 손상된 캐시는 조용히 {}로 바꾸지 않고 멈춘다(R1-3).
+  const cache: Record<string, CacheEntry> = readJsonCache<Record<string, CacheEntry>>(
+    CACHE_FILE,
+    "번역 재사용 캐시(.corpus-cache/translations.json)",
+    {},
+  );
+
+  for (const arg of files) mergeOne(arg, rows, cache);
+
+  // 임시 파일로 썼다가 이름을 바꾼다. 쓰는 도중에 멈추면 캐시 전체(JSON 한 장)가 깨진다.
+  // 빌더는 부서진 캐시를 조용히 빈 캐시로 취급하므로, 1,400개 번역을 한 번에 잃을 수 있다.
+  mkdirSync(CACHE_DIR, { recursive: true });
+  writeJsonAtomically(CACHE_FILE, cache); // .corpus-cache/는 gitignore 대상
+  const stillMissing = rows.filter((row) => !cache[normalizeKey(row.en)]?.ko).length;
+  console.log(
+    `캐시 합침: 신규 ${added} · 갱신 ${overwritten} · 건너뜀 ${skipped} — ` +
+      `캐시 ${Object.keys(cache).length}항목 / 작업 목록 ${rows.length}문장 / 아직 번역 없음 ${stillMissing}문장`,
+  );
+}
+
 try {
-  for (const arg of process.argv.slice(2)) mergeOne(arg, rows, cache);
+  main();
 } catch (e) {
-  // 예상 밖 오류도 한 줄 안내로 끝낸다(R4-2).
+  // 예상 밖 오류도 한 줄 안내로 끝낸다(R4-2). 캐시 읽기·마지막 쓰기까지 같은 try 안에 있어,
+  // 실패 원인이 스택 트레이스가 아니라 한국어 안내로 남는다(R6-9).
   console.error(`원고를 합치지 못했습니다: ${e instanceof Error ? e.message : String(e)}`);
   process.exit(1);
 }
 
-// 임시 파일로 썼다가 이름을 바꾼다. 쓰는 도중에 멈추면 캐시 전체(JSON 한 장)가 깨진다.
-// 빌더는 부서진 캐시를 조용히 빈 캐시로 취급하므로, 1,400개 번역을 한 번에 잃을 수 있다.
-mkdirSync(CACHE_DIR, { recursive: true });
-writeJsonAtomically(CACHE_FILE, cache); // .corpus-cache/는 gitignore 대상
-const stillMissing = rows.filter((row) => !cache[normalizeKey(row.en)]?.ko).length;
-console.log(
-  `캐시 합침: 신규 ${added} · 갱신 ${overwritten} · 건너뜀 ${skipped} — ` +
-    `캐시 ${Object.keys(cache).length}항목 / 작업 목록 ${rows.length}문장 / 아직 번역 없음 ${stillMissing}문장`,
-);

@@ -12,6 +12,7 @@ import TranslationTab from "@/components/translation-tab";
 import ReviewTab from "@/components/review-tab";
 import SettingsTab from "@/components/settings-tab";
 import StorageWarning from "@/components/storage-warning";
+import TabWarning from "@/components/tab-warning";
 
 type TabId = "free" | "translate" | "review" | "settings";
 
@@ -107,6 +108,8 @@ export default function Home() {
         {/* 저장은 번역·자유 작성 탭에서 일어난다. 실패 안내는 탭 하나 안에 두면
             다른 탭에 있는 사용자에게 닿지 않는다(리뷰 1-8). */}
         <StorageWarning />
+        {/* 같은 앱이 다른 탭에 열려 있으면 쓰기가 서로를 덮는다(D3-1). */}
+        <TabWarning />
         {/* 모든 탭을 마운트해 두고 hidden으로 전환 → 탭 이동 시 입력 상태 유지 */}
         {TABS.map((t) => (
           <div

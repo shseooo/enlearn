@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import TranslationTab from "../translation-tab";
 import { clearCorpusCache, localDateString, prefillCorpus, seenCount } from "@/lib/corpus";
+import { loadLog } from "@/lib/practice";
 import { addDays } from "@/lib/practice";
 import type { CorpusFile } from "@/lib/types";
 
@@ -296,6 +297,42 @@ describe("TranslationTab — 코퍼스 문장", () => {
     expect(screen.queryByText("Tom looks sick.")).not.toBeInTheDocument();
     vi.unstubAllGlobals();
   });
+
+  /*
+   * R6-19(리뷰 5): 채점이 실패하는 경로는 화면 테스트가 한 번도 없었다.
+   * 실패하면 지난 결과 카드를 지우고 이유를 보여주되, 입력한 문장은 남겨
+   * 설정만 고치고 다시 시도할 수 있어야 한다.
+   */
+  it("채점이 실패하면 이유를 보여주고 지난 결과 카드를 내린다 (R6-19)", async () => {
+    prefillCorpus("daily", dailyFile);
+    evaluateMock
+      .mockResolvedValueOnce({
+        score: 80,
+        feedback: "좋습니다.",
+        corrections: [],
+        betterExpression: "Tom looks sick.",
+      })
+      .mockRejectedValueOnce(new Error("HTTP 401 Unauthorized — API 키를 확인하세요."));
+
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await screen.findByText("톰은 많이 아파 보여.");
+    const box = screen.getByLabelText(/내 영어 번역/);
+    await user.type(box, "Tom looked sick.");
+    await user.click(screen.getByRole("button", { name: /점수 받기/ }));
+    await screen.findByText("Tom looks sick."); // 성공한 평가 카드가 화면에 있다
+
+    await user.click(screen.getByRole("button", { name: /점수 받기/ })); // 이번 시도는 실패
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/HTTP 401/);
+    // 지난 점수 카드가 그대로 남아 "이번 시도도 성공한 것처럼" 보이면 안 된다
+    expect(screen.queryByText("Tom looks sick.")).not.toBeInTheDocument();
+    // 사용자가 쓴 문장은 남는다
+    expect(box).toHaveValue("Tom looked sick.");
+    // 실패한 채점은 연습 기록에 남기지 않는다 (성공한 1건만)
+    expect(loadLog()).toHaveLength(1);
+  });
 });
 
 describe("TranslationTab — 취소·출처 변경 경합 (리뷰 3-2)", () => {
@@ -329,7 +366,7 @@ describe("TranslationTab — 취소·출처 변경 경합 (리뷰 3-2)", () => {
     fetcher.respond(dailyFile);
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(window.localStorage.getItem("enlearn.seen.v2")).toBeNull();
+    expect(window.localStorage.getItem("enlearn.seen.v3")).toBeNull();
     expect(screen.queryByText("톰은 많이 아파 보여.")).not.toBeInTheDocument();
     expect(fetcher.spy).toHaveBeenCalledTimes(1);
     fetcher.restore();
@@ -346,7 +383,7 @@ describe("TranslationTab — 취소·출처 변경 경합 (리뷰 3-2)", () => {
     fetcher.respond(dailyFile);
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(window.localStorage.getItem("enlearn.seen.v2")).toBeNull();
+    expect(window.localStorage.getItem("enlearn.seen.v3")).toBeNull();
     expect(screen.queryByText("톰은 많이 아파 보여.")).not.toBeInTheDocument();
     // 다시 받으면 같은 문장이 여전히 나올 수 있다
     prefillCorpus("daily", dailyFile);
@@ -370,7 +407,7 @@ describe("TranslationTab — 취소·출처 변경 경합 (리뷰 3-2)", () => {
     fetcher.respond(dailyFile);
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(window.localStorage.getItem("enlearn.seen.v2")).toBeNull();
+    expect(window.localStorage.getItem("enlearn.seen.v3")).toBeNull();
     expect(screen.queryByText("톰은 많이 아파 보여.")).not.toBeInTheDocument();
     fetcher.restore();
   });
@@ -402,7 +439,7 @@ describe("TranslationTab — 취소·출처 변경 경합 (리뷰 3-2)", () => {
 
     expect(screen.queryByText("창문 쪽으로 기어갔다.")).not.toBeInTheDocument();
     expect(seenCount()).toBe(seenBefore);
-    expect(window.localStorage.getItem("enlearn.seen.v2")).not.toContain(
+    expect(window.localStorage.getItem("enlearn.seen.v3")).not.toContain(
       "looking-glass",
     );
     fetcher.restore();

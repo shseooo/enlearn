@@ -16,7 +16,6 @@ import {
 } from "./practice";
 import {
   batchProgress,
-  clearKoreanCache,
   exportKoreanCache,
   exportSeen,
   importKoreanCache,
@@ -218,6 +217,10 @@ export interface RestoreResult {
   srs: number;
   seen: number;
   koreanCache: number;
+  /** sanitizer가 거부한 항목 수 (저장소별) — "N건은 형식이 맞지 않아 제외"로 보여준다(D4-2). */
+  rejected: BackupCounts;
+  /** 저장소 상한(MAX_RECORDS · MAX_SEEN · MAX_SRS · MAX_KOREAN_CACHE)으로 잘린 항목 수(D4-2). */
+  trimmed: BackupCounts;
   settingsRestored: boolean;
   /**
    * 반영 중에 저장이 실패한 저장소가 있다(용량 초과 등). 이 경우 위의 개수는
@@ -243,22 +246,39 @@ export function restoreBackup(
   // import*의 개수 반환은 저장이 실패해도 "이전 값"을 세어 성공처럼 보인다.
   // 그래서 safeSetItem이 센 실패 횟수를 함께 확인한다(리뷰 2-4).
   const failuresBefore = writeFailureCount();
-  const result: RestoreResult = batchProgress(() =>
+  const imported = batchProgress(() =>
     batchPractice(() => {
-      if (replace) {
-        // import*(replace=true)가 빈 목록으로도 저장소를 비운다
-        clearKoreanCache();
-      }
+      // ⚠️ 대체 경로에서 clearKoreanCache()를 먼저 부르지 않는다(R6-16):
+      // 아래 importKoreanCache(replace=true)가 같은 키를 무조건 덮어써 같은 값을
+      // 두 번 쓰는 셈이었고, 앞의 쓰기가 실패하면 지운 캐시만 되돌려지지 않았다.
       return {
         log: importLog(file.data.log, replace),
         srs: importSrs(file.data.srs, replace),
         seen: importSeen(file.data.seen, replace),
         koreanCache: importKoreanCache(file.data.koreanCache, replace),
-        settingsRestored: false,
-        writeFailed: false,
       };
     }),
   );
+  const result: RestoreResult = {
+    log: imported.log.stored,
+    srs: imported.srs.stored,
+    seen: imported.seen.stored,
+    koreanCache: imported.koreanCache.stored,
+    rejected: {
+      log: imported.log.rejected,
+      srs: imported.srs.rejected,
+      seen: imported.seen.rejected,
+      koreanCache: imported.koreanCache.rejected,
+    },
+    trimmed: {
+      log: imported.log.trimmed,
+      srs: imported.srs.trimmed,
+      seen: imported.seen.trimmed,
+      koreanCache: imported.koreanCache.trimmed,
+    },
+    settingsRestored: false,
+    writeFailed: false,
+  };
   if (restoreSettings && file.data.settings) {
     const current = loadSettings();
     // API 키는 백업에 없으므로 지금의 키를 그대로 둔다

@@ -9,13 +9,11 @@ import { describe, expect, it } from "vitest";
 
 import type { CorpusEntry, CorpusFile } from "../../src/lib/types";
 
-import { foreignLetterRuns, hasHangul } from "../lib/foreign-text.ts";
+import { BASE_ALLOWED_LATIN, foreignLetterRuns, hasHangul } from "../lib/foreign-text.ts";
 
-/**
- * 한국어 문장 안에서 정당한 라틴 문자.
- * Tatoeba가 제공한 일상 회화 번역의 고유명사·약어이고, 동화 레인에서는 쓰이지 않는다.
- */
-const ALLOWED_LATIN = new Set(["Tom", "Mary", "TV", "DNA", "MRI", "A", "B", "C"]);
+// D4-3(R6-12): 허용 목록은 세 곳에 복사되어 각각 다르게 어긋났다. 이제 스크립트·테스트가
+// scripts/lib/foreign-text.ts의 한 개 목록을 함께 쓴다(각 항목의 근거도 거기 적혀 있다).
+const ALLOWED_LATIN = new Set(BASE_ALLOWED_LATIN.map((entry) => entry.word));
 
 /** 레인 이름과 파일 이름이 다르다(classic → classics.json). */
 function load(lane: "daily" | "classic"): CorpusFile {

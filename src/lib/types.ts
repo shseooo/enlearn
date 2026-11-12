@@ -86,3 +86,17 @@ export interface CorpusFile {
   sources: CorpusSourceInfo[];
   entries: CorpusEntry[];
 }
+
+/**
+ * 백업·저장소 합치기가 실제로 무엇을 했는지 (D4-2).
+ * 개수 하나만 돌려주면 "400개 합침"이 "400개만 들어가고 1,600건은 버려졌다"와
+ * 구분되지 않는다(R6-3).
+ */
+export interface ImportResult {
+  /** 저장소에 실제로 남은 항목 수 */
+  stored: number;
+  /** sanitizer가 거부한 항목 수 (형식·날짜·길이 규칙 위반) */
+  rejected: number;
+  /** 저장소 상한(MAX_RECORDS · MAX_SEEN · MAX_SRS · MAX_KOREAN_CACHE)으로 잘린 항목 수 */
+  trimmed: number;
+}

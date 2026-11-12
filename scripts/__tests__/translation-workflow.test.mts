@@ -100,6 +100,24 @@ describe("사전 번역 도구사슬", () => {
     ]);
   });
 
+  // D3-2(R6-4): merge가 원문과 대조할 수 있게, dump는 원문 앞부분을 담은 원고 틀도 뽑는다.
+  it("dump는 원문 앞부분을 담은 빈 원고 틀도 만든다 (D3-2)", () => {
+    const root = makeTrackedWorkspace();
+    const out = runOk(root, "dump-untranslated.mts");
+    expect(out).toContain("manuscript.tsv");
+
+    const rows = readFileSync(join(root, ".corpus-cache", "manuscript.tsv"), "utf8")
+      .replace(/\r?\n$/, "")
+      .split("\n")
+      .map((line) => line.split("\t"));
+    expect(rows).toEqual([
+      ["0", "Sentence number 1.", ""],
+      ["1", "Sentence number 3.", ""],
+      ["2", "Sentence number 4.", ""],
+      ["3", "Sentence number 5.", ""],
+    ]);
+  });
+
   it("번역이 필요한 문장이 없으면 기존 작업 목록을 지우지 않는다", () => {
     // 다른 테스트가 만든 작업 목록에 기대지 않고, 같은 작업 공간에서 스스로 채운다.
     const root = makeTrackedWorkspace();
@@ -185,7 +203,7 @@ describe("사전 번역 도구사슬", () => {
     mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
     writeFileSync(
       join(workspace, ".corpus-cache", "ko", "bad.txt"),
-      "0\t첫 번째 문장입니다.\n0\t또 첫 번째 문장입니다.\n",
+      "0\tSentence number 1.\t첫 번째 문장입니다.\n0\tSentence number 1.\t또 첫 번째 문장입니다.\n",
     );
     const rejected = run(workspace, "merge-translations.mts", [".corpus-cache/ko/bad.txt#0"]);
     expect(rejected.status).toBe(1);
@@ -227,7 +245,7 @@ describe("사전 번역 도구사슬", () => {
     mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
     writeFileSync(
       join(workspace, ".corpus-cache", "ko", "dirty.txt"),
-      "0\t문장에 TV가 섞였다 C20\n1\t순수 english만\n",
+      "0\tSentence number 1.\t문장에 TV가 섞였다 C20\n1\tSentence number 3.\t순수 english만\n",
     );
     const out = runOk(workspace, "merge-translations.mts", [".corpus-cache/ko/dirty.txt#0"]);
     expect(out).toContain("다른 언어 문자가 섞였습니다 [TV | C20]");
@@ -241,7 +259,7 @@ describe("사전 번역 도구사슬", () => {
     // merge가 자체적으로 쓰던 [가-힣] 정규식에서는 여기서만 "한글 없음"으로 걸러졌다.
     writeFileSync(
       join(workspace, ".corpus-cache", "ko", "jamo.txt"),
-      "0\t\u3131\u314f\u3137\u3142\n",
+      "0\tSentence number 1.\t\u3131\u314f\u3137\u3142\n",
     );
 
     const check = runOk(workspace, "check-translations.mts", [
@@ -265,12 +283,92 @@ describe("사전 번역 도구사슬", () => {
     mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
     writeFileSync(
       join(workspace, ".corpus-cache", "ko", "good.txt"),
-      "0\t첫 문장입니다.\n1\t세 문장입니다.\n2\t네 문장입니다.\n3\t다섯 문장입니다.\n",
+      "0\tSentence number 1.\t첫 문장입니다.\n1\tSentence number 3.\t세 문장입니다.\n2\tSentence number 4.\t네 문장입니다.\n3\tSentence number 5.\t다섯 문장입니다.\n",
     );
     runOk(workspace, "merge-translations.mts", [".corpus-cache/ko/good.txt#0"]);
     const audit = run(workspace, "audit-translations.mts");
     // 코퍼스 파일에는 아직 한국어가 없으므로 감사는 실패로 끝나야 한다.
     expect(audit.status).toBe(1);
     expect(audit.out).toContain("빌드 미반영 4");
+  });
+
+  /*
+   * D3-2(R6-4): 원고 검증이 "번호가 연속인지"만 보니, 두 줄을 맞바꾸거나 순서를
+   * 다시 써도(번호는 여전히 연속) 모든 번역이 엉뚱한 문장에 붙어 코퍼스에 남는다.
+   * 원고의 "원문 앞부분" 컬럼을 worklist와 대조해 그 자리를 막는다.
+   */
+  it("원문 앞부분이 worklist와 다른 줄은 파일 통째로 거부한다 (D3-2)", () => {
+    const workspace = makeTrackedWorkspace();
+    run(workspace, "dump-untranslated.mts");
+    mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
+    // 번호는 연속적이지만 0·1행의 원문 앞부분이 서로 바뀌었다.
+    writeFileSync(
+      join(workspace, ".corpus-cache", "ko", "swapped.txt"),
+      "0\tSentence number 3.\t첫 문장 번역입니다.\n1\tSentence number 1.\t세 문장 번역입니다.\n",
+    );
+    const rejected = run(workspace, "merge-translations.mts", [
+      ".corpus-cache/ko/swapped.txt#0",
+    ]);
+    expect(rejected.status).toBe(1);
+    expect(rejected.out).toContain("원문 앞부분이 worklist와 다릅니다");
+    // 거부된 원고는 캐시에 한 항목도 남기지 않는다
+    expect(existsSync(join(workspace, ".corpus-cache", "translations.json"))).toBe(false);
+  });
+
+  it("두 칸짜리 옛 형식 원고는 거부한다 (D3-2 — 호환 없음)", () => {
+    const workspace = makeTrackedWorkspace();
+    run(workspace, "dump-untranslated.mts");
+    mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
+    writeFileSync(
+      join(workspace, ".corpus-cache", "ko", "legacy.txt"),
+      "0\t첫 문장 번역입니다.\n",
+    );
+    const rejected = run(workspace, "merge-translations.mts", [
+      ".corpus-cache/ko/legacy.txt#0",
+    ]);
+    expect(rejected.status).toBe(1);
+    expect(rejected.out).toContain("세 칸입니다");
+    expect(existsSync(join(workspace, ".corpus-cache", "translations.json"))).toBe(false);
+  });
+
+  it("원문 앞부분을 짧게 줄여 써도 같은 문장이면 받아들인다 (접두어 대조)", () => {
+    const workspace = makeTrackedWorkspace();
+    run(workspace, "dump-untranslated.mts");
+    mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
+    writeFileSync(
+      join(workspace, ".corpus-cache", "ko", "short.txt"),
+      "0\tS\t첫 문장 번역입니다.\n",
+    );
+    const rejected = run(workspace, "merge-translations.mts", [
+      ".corpus-cache/ko/short.txt#0",
+    ]);
+    expect(rejected.status).toBe(1);
+    expect(rejected.out).toContain("원문 앞부분이 worklist와 다릅니다");
+
+    writeFileSync(
+      join(workspace, ".corpus-cache", "ko", "ok.txt"),
+      "0\tSentence num\t첫 문장 번역입니다.\n",
+    );
+    const ok = runOk(workspace, "merge-translations.mts", [".corpus-cache/ko/ok.txt#0"]);
+    expect(ok).toContain("캐시 합침");
+  });
+
+  // R6-9: 손상된 번역 캐시를 합칠 때 스택 트레이스가 아니라 안내 한 줄로 끝나야 한다.
+  it("손상된 번역 캐시를 합치려 하면 안내 한 줄로 끝난다 (R6-9)", () => {
+    const workspace = makeTrackedWorkspace();
+    run(workspace, "dump-untranslated.mts");
+    mkdirSync(join(workspace, ".corpus-cache", "ko"), { recursive: true });
+    mkdirSync(join(workspace, ".corpus-cache"), { recursive: true });
+    writeFileSync(join(workspace, ".corpus-cache", "translations.json"), "{ 깨진 캐시");
+    writeFileSync(
+      join(workspace, ".corpus-cache", "ko", "any.txt"),
+      "0\tSentence number 1.\t첫 문장 번역입니다.\n",
+    );
+    const r = run(workspace, "merge-translations.mts", [".corpus-cache/ko/any.txt#0"]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain("원고를 합치지 못했습니다");
+    expect(r.out).toContain("손상되었습니다");
+    expect(r.out).not.toMatch(/^\s+at /m);
+    expect(r.out).not.toContain("Node.js v");
   });
 });

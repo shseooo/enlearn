@@ -24,6 +24,8 @@ process.env.ENLEARN_CORPUS_ROOT = WORKSPACE;
 const {
   LLM_BATCH_SIZE,
   acceptsDailyKorean,
+  cachedBytes,
+  isCompleteGutenbergText,
   fillKoreanTranslations,
   loadTranslationCache,
   saveTranslationCache,
@@ -36,6 +38,59 @@ afterAll(() => {
 });
 
 const CACHE_FILE = join(WORKSPACE, ".corpus-cache", "translations.json");
+const BOOK_CACHE_DIR = join(WORKSPACE, ".corpus-cache");
+
+/*
+ * R6-8(리뷰 5, 4차 리뷰 R5-1에서 이관): 캐시된 파일만 끝 마커를 확인했다.
+ * 막 내려받은 바이트는 검사 없이 캐시에 쓰고 이번 빌드에도 그대로 들어갔다 —
+ * 원본 서버가 잘린 파일을 주면 잘린 책이 조용히 코퍼스에 참여한다.
+ */
+describe("cachedBytes — 내려받은 원본도 완성본 검사 (R6-8)", () => {
+  const END_MARKER = "\n*** END OF THE PROJECT GUTENBERG EBOOK 11 ***\n";
+
+  function stubFetch(body: string) {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      arrayBuffer: async () => new TextEncoder().encode(body).buffer,
+      body: null,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("잘린 원본은 캐시에 쓰지 않고 오류로 끝난다", async () => {
+    const fetchMock = stubFetch("Alice was beginning to get very tired… (여기서 잘림)");
+
+    await expect(
+      cachedBytes("pg-truncated.txt", ["https://example.test/pg11"], isCompleteGutenbergText),
+    ).rejects.toThrow(/완성본이 아닙니다/);
+
+    // 잘린 바이트가 캐시에 남으면 다음 빌드가それを 완성본으로 쓴다.
+    expect(existsSync(join(BOOK_CACHE_DIR, "pg-truncated.txt"))).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("완성본만 캐시에 쓴다", async () => {
+    stubFetch(`Alice was beginning to get very tired.${END_MARKER}`);
+
+    const buf = await cachedBytes(
+      "pg-complete.txt",
+      ["https://example.test/pg11"],
+      isCompleteGutenbergText,
+    );
+    expect(buf.toString()).toContain("END OF THE PROJECT GUTENBERG");
+    expect(readFileSync(join(BOOK_CACHE_DIR, "pg-complete.txt"), "utf8")).toContain(
+      "END OF THE PROJECT GUTENBERG",
+    );
+  });
+
+  it("끝 마커 검사 없는 자료(zip 등)는 그대로 캐시한다", async () => {
+    stubFetch("zip바이트 흉내");
+    const buf = await cachedBytes("raw.bin", ["https://example.test/raw"]);
+    expect(buf.toString()).toBe("zip바이트 흉내");
+  });
+});
 
 beforeEach(() => {
   vi.unstubAllGlobals();

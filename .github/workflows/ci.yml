@@ -16,6 +16,9 @@ jobs:
           node-version: "24"
           cache: npm
       - run: npm ci
+       # 프로덕션 의존성만 게이트로 본다(resolved.md의 npm audit 결정). dev 전용 advisory는
+      # 개발 도구 체인(예: @typescript-eslint → minimatch)에서 풀리는 것이라 막지 않는다.
+      - run: npm audit --omit=dev --audit-level=high
       # Next 16은 LayoutProps 같은 타입을 .next/types에 생성한다(next-env.d.ts가 참조).
       # 이 단계가 없으면 클린 체크아웃에서 typecheck만 깨진다.
       - run: npm run build

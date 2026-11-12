@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import BackupCard from "../backup-card";
 import StorageWarning from "../storage-warning";
-import { loadLog, logPractice } from "@/lib/practice";
+import { loadLog, logPractice, MAX_RECORDS } from "@/lib/practice";
 import { saveSettings } from "@/lib/settings";
 import { BACKUP_APP, buildBackup } from "@/lib/backup";
 
@@ -336,5 +336,45 @@ describe("BackupCard — 저장 실패 안내 (리뷰 3-9)", () => {
     expect(screen.queryByText(/대체했습니다/)).not.toBeInTheDocument();
     confirmSpy.mockRestore();
     spy.mockRestore();
+  });
+
+  /*
+   * D4-2(R6-3): 개수만 세면 "400건 합침"과 "2,000건 중 400건만 담김"이 같은 문구로
+   * 나왔다. 잘린 개수와 형식이 맞지 않아 버린 개수를 화면에 적는다.
+   */
+  it("저장하지 못한 개수를 복원 문구에 담는다 (D4-2)", async () => {
+    const bulk = Array.from({ length: MAX_RECORDS + 20 }, (_, i) => ({
+      date: `2026-01-0${(i % 5) + 1}`,
+      lane: "classic",
+      en: `Bulk backup sentence ${i}.`,
+      ko: `대량 백업 문장 ${i}.`,
+      answer: `answer ${i}`,
+      score: 50,
+      corrections: [],
+    }));
+    const text = JSON.stringify({
+      app: BACKUP_APP,
+      version: 1,
+      data: {
+        log: [...bulk, { date: "2026-01-02", lane: "classic", score: 10 }], // 원문 없는 항목
+        srs: [],
+        seen: {},
+        koreanCache: {},
+      },
+    });
+
+    render(<BackupCard />);
+    const user = userEvent.setup();
+    await user.upload(
+      screen.getByLabelText(/백업 가져오기/),
+      new File([text], "enlearn-backup.json", { type: "application/json" }),
+    );
+    await user.click(screen.getByRole("button", { name: /지금 기록에 합치기/ }));
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(`기록 ${MAX_RECORDS}개`);
+    expect(status.textContent).toContain("20건은 저장소 상한으로 제외");
+    expect(status.textContent).toContain("1건은 형식이 맞지 않아 제외");
+    expect(loadLog()).toHaveLength(MAX_RECORDS);
   });
 });

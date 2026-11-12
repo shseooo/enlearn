@@ -360,7 +360,7 @@ describe("푼 기록", () => {
   });
 
   it("깨진 값이 들어 있어도 기본값으로 동작한다", () => {
-    window.localStorage.setItem("enlearn.seen.v2", "{깨진 json");
+    window.localStorage.setItem("enlearn.seen.v3", "{깨진 json");
     expect(seenCount()).toBe(0);
     markSeen("daily:x");
     expect("daily:x" in loadSeen()).toBe(true);
@@ -370,7 +370,7 @@ describe("푼 기록", () => {
 describe("동화 문장의 한국어 캐시", () => {
   it("힌트가 문자열 배열이 아니면 캐시를 무시한다", () => {
     window.localStorage.setItem(
-      "enlearn.kocache.v2",
+      "enlearn.kocache.v3",
       JSON.stringify({ k: { ko: "문장.", hints: [1, 2] } }),
     );
     expect(getCachedKorean("k")).toBeNull();
@@ -380,7 +380,7 @@ describe("동화 문장의 한국어 캐시", () => {
   // 그러면 hints:[42] 같은 항목이 "검증된 백업"에 담겨 다른 기기에서 조용히 사라진다.
   it("번역 캐시 내보내기도 cacheKorean과 같은 검사·상한을 통과시킨다 (리뷰 2-15)", () => {
     window.localStorage.setItem(
-      "enlearn.kocache.v2",
+      "enlearn.kocache.v3",
       JSON.stringify({
         "classic:ok": { ko: "정상 번역입니다.", hints: ["ok"] },
         "classic:bad-hints": { ko: "힌트가 숫자.", hints: [42] },
@@ -427,7 +427,8 @@ describe("동화 문장의 한국어 캐시", () => {
       "classic:3:empty": { ko: "   ", hints: ["x"] },
       "classic:4:notobj": "번역 문자열",
     });
-    expect(accepted).toBe(2);
+    expect(accepted.stored).toBe(2);
+    expect(accepted.rejected).toBe(2); // 빈 ko · 객체 아닌 항목
 
     const long = getCachedKorean("classic:1:long")!;
     expect(long.ko.length).toBe(600);
@@ -583,7 +584,7 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     for (let i = 0; i < MAX_KOREAN_CACHE + 50; i++) {
       bulk[`classic:${i}:fill`] = { ko: `채움 번역 ${i}번입니다.`, hints: ["fill"] };
     }
-    expect(importKoreanCache(bulk, true)).toBeLessThanOrEqual(MAX_KOREAN_CACHE);
+    expect(importKoreanCache(bulk, true).stored).toBeLessThanOrEqual(MAX_KOREAN_CACHE);
     expect(koreanCacheCount()).toBe(MAX_KOREAN_CACHE);
     // 가장 나중에 들어온 항목은 살아있다
     expect(getCachedKorean(`classic:${MAX_KOREAN_CACHE + 49}:fill`)).not.toBeNull();
@@ -609,7 +610,9 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
       bulk[`daily:${i}:k`] = `2026-01-0${(i % 5) + 1}T00:00:00.000Z`;
     }
     const accepted = importSeen(bulk, true);
-    expect(accepted).toBeLessThanOrEqual(MAX_SEEN);
+    expect(accepted.stored).toBeLessThanOrEqual(MAX_SEEN);
+    // 상한으로 잘린 개수가 따로 드러난다(D4-2/R6-3).
+    expect(accepted.trimmed).toBe(10);
     expect(seenCount()).toBe(MAX_SEEN);
   });
 
@@ -700,7 +703,8 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
 
     const seen = loadSeen();
     // 미래 시각은 저장소에 들어오지 않는다
-    expect(accepted).toBe(1);
+    expect(accepted.stored).toBe(1);
+    expect(accepted.rejected).toBe(MAX_SEEN);
     expect(seenCount()).toBe(1);
     expect(seen["classic:0:future"]).toBeUndefined();
     // 실제 최근 기록은 그대로 살아남는다
@@ -748,7 +752,7 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
       },
       true,
     );
-    const rawKorean = window.localStorage.getItem("enlearn.kocache.v2") ?? "{}";
+    const rawKorean = window.localStorage.getItem("enlearn.kocache.v3") ?? "{}";
     expect(Object.keys(JSON.parse(rawKorean))).toEqual(["classic:ok:k"]);
   });
 
@@ -760,9 +764,55 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     expect(seen["classic:ok:k"]).toBe("2024-05-05T00:00:00.000Z");
   });
 
+  // D2-1(R6-2): 합치기의 "누가 이기나"가 저장소마다 달랐다. seen은 본 시각 기준.
+  it("본 문장 합치기는 더 최근 본 시각이 이기고, 같으면 기존 값이 남는다 (D2-1)", () => {
+    importSeen(
+      {
+        "classic:keep:k": "2026-06-01T00:00:00.000Z",
+        "classic:newer:k": "2026-06-01T00:00:00.000Z",
+        "classic:same:k": "2026-06-01T12:00:00.000Z",
+      },
+      true,
+    );
+
+    // 더 옛날에 봤다는 사본이 들어와도 최근 기록을 되돌리지 않는다.
+    const older = importSeen({
+      "classic:keep:k": "2020-01-01T00:00:00.000Z",
+      "classic:newer:k": "2026-09-09T00:00:00.000Z",
+      "classic:same:k": "2026-06-01T12:00:00.000Z",
+    });
+    expect(older.stored).toBe(3);
+    const seen = loadSeen();
+    expect(seen["classic:keep:k"]).toBe("2026-06-01T00:00:00.000Z");
+    // 더 최근 시각은 받아들여진다.
+    expect(seen["classic:newer:k"]).toBe("2026-09-09T00:00:00.000Z");
+    // 같은 시각이면 기존 값이 이긴다.
+    expect(seen["classic:same:k"]).toBe("2026-06-01T12:00:00.000Z");
+  });
+
+  it("번역 캐시 합치기는 기존 값(화면에 보여 검증된 번역)을 지킨다 (D2-1)", () => {
+    cacheKorean("classic:keep:k", "기존 번역입니다.", ["old"]);
+    const result = importKoreanCache({
+      "classic:keep:k": { ko: "백업의 다른 번역입니다.", hints: ["new"] },
+      "classic:new:k": { ko: "새로 들어온 번역입니다.", hints: ["new"] },
+    });
+    expect(result.stored).toBe(2); // 두 항목 모두 저장소에 있다
+    expect(getCachedKorean("classic:keep:k")?.ko).toBe("기존 번역입니다.");
+    expect(getCachedKorean("classic:new:k")?.ko).toBe("새로 들어온 번역입니다.");
+
+    // 상한을 넘기면 잘린 개수를 알려준다(D4-2).
+    const bulk: Record<string, { ko: string; hints: string[] }> = {};
+    for (let i = 0; i < MAX_KOREAN_CACHE + 50; i++) {
+      bulk[`classic:${i}:cut`] = { ko: `자르는 확인 ${i}번 문장.`, hints: ["cut"] };
+    }
+    const trimmedResult = importKoreanCache(bulk, true);
+    expect(trimmedResult.stored).toBe(MAX_KOREAN_CACHE);
+    expect(trimmedResult.trimmed).toBe(50);
+  });
+
   it("저장이 실패하면 다음 읽기도 저장소의 이전 값을 본다 (파싱 캐시)", () => {
     markSeen("daily:1:kept");
-    const before = window.localStorage.getItem("enlearn.seen.v2");
+    const before = window.localStorage.getItem("enlearn.seen.v3");
 
     const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("QuotaExceededError", "QuotaExceededError");
@@ -771,7 +821,7 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     spy.mockRestore();
 
     // 메모리에 파싱 결과를 재사용해도, 실패한 변경이 화면에 보이지 않아야 한다
-    expect(window.localStorage.getItem("enlearn.seen.v2")).toBe(before);
+    expect(window.localStorage.getItem("enlearn.seen.v3")).toBe(before);
     expect("daily:2:phantom" in loadSeen()).toBe(false);
     expect(seenCount()).toBe(1);
   });
@@ -785,7 +835,7 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
       throw new DOMException("QuotaExceededError", "QuotaExceededError");
     });
     expect(
-      importSeen({ "daily:9:zz": "2026-03-01T00:00:00.000Z" }, false),
+      importSeen({ "daily:9:zz": "2026-03-01T00:00:00.000Z" }, false).stored,
     ).toBe(0);
     expect(() => markSeen("daily:10:yy")).not.toThrow();
     vi.spyOn(Storage.prototype, "setItem").mockRestore();

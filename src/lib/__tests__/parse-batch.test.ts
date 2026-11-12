@@ -165,6 +165,29 @@ describe("parseTranslationBatch", () => {
     expect([...map.keys()]).toEqual([ENS[2]]);
   });
 
+  /*
+   * R6-18(리뷰 5, 5차 리뷰 R5-6에서 이관): 주석은 "구두점 빼고 3자 이상"을 약속했지만
+   * 코드는 2자만 걸렀다. "고양."(2자)이 코퍼스에 들어갔고, 조용히 넘어가서 이유도 남지 않았다.
+   */
+  it("구두점 빼고 2자인 번역도 폐기하고 이유를 남긴다 (R6-18)", () => {
+    const rejected: string[] = [];
+    const map = parseTranslationBatch(
+      JSON.stringify({
+        items: [
+          { i: 1, ko: "고양." }, // 구두점 빼면 2자 — 예전에는 통과했다
+          { i: 2, ko: "네." }, // 1자
+          { i: 3, ko: "토끼가 달아났다." },
+        ],
+      }),
+      ENS,
+      (reason) => rejected.push(reason),
+    );
+    expect([...map.keys()]).toEqual([ENS[2]]);
+    expect(rejected).toHaveLength(2);
+    expect(rejected[0]).toContain("번역이 너무 짧습니다");
+    expect(rejected[0]).toContain("고양.");
+  });
+
   it("힌트는 최대 4개·문자열만 남긴다", () => {
     const map = parseTranslationBatch(
       JSON.stringify({

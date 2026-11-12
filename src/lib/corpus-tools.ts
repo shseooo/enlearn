@@ -171,6 +171,39 @@ export function splitSentences(text: string): string[] {
   return out;
 }
 
+/**
+ * "… Grants Dorothy's Wish Chapter XXIV."처럼 장 제목이 문장에 붙어 온 잡음인지 본다(R6-13).
+ *
+ * 두 줄을 굽혀 만든 제목 행이 splitSentences를 지나 코퍼스로 들어온다.
+ * - 키워드(chapter/book/volume/illustration)는 대소문자를 가리지 않는다(Gutenberg에
+ *   "CHAPTER III."와 "Chapter XXIV."가 섞여 있다).
+ * - 로마숫자는 대문자만 인정한다 — "the book is on the table"을 잡지 않게,
+ *   소문자 조각("is", "it")은 제외한다.
+ * - 한 글자 숫자(I·V·X)는 문장 끝에서 만 인정한다 — "the book I had given him"은 정상 문장이다.
+ */
+function isChapterTitleNoise(sentence: string): boolean {
+  const match = /\s(chapter|book|volume|illustration)s?\s+([ivxlcdm]+)(?![a-z])/i.exec(sentence);
+  if (!match) return false;
+  const numeral = match[2];
+  if (numeral !== numeral.toUpperCase()) return false;
+  if (numeral.length >= 2) return true;
+  return /^[.!?"]?\s*$/.test(sentence.slice(match.index + match[0].length));
+}
+
+/** 영어 기능어(Stopword)가 하나라도 있는지 — 비영어 잡음 문장을 거르는 기준 */
+function containsEnglishFunctionWord(words: string[]): boolean {
+  for (const raw of words) {
+    const w = raw.toLowerCase().replace(/[^a-z']/g, "");
+    if (!w) continue;
+    if (STOPWORDS.has(w)) return true;
+    // 축약형(there's, I'll)은 어절 앞부분만 본다. don't처럼 앞이 기능어가 아닌 것도 있으나,
+    // 그런 문장은 다른 기능어를 담는 경우가 압도적으로 많다.
+    const head = w.split("'")[0];
+    if (head && STOPWORDS.has(head)) return true;
+  }
+  return false;
+}
+
 /** 연습 문장으로 쓸 만한지 판단한다. (짧은 대사와 장황한 서술을 걸러낸다) */
 export function isPracticeSentence(
   sentence: string,
@@ -196,6 +229,15 @@ export function isPracticeSentence(
   // "Chapter I", "by the same author" 같은 부속물 제외
   if (/^(chapter|book|volume|illustrated|frontispiece|note by|preface)\b/i.test(s))
     return false;
+  // 잡음: 장·권 제목이 문장으로 붙어 들어온 것 ("… Grants Dorothy's Wish Chapter XXIV.")
+  // 위의 접두 검사로는 문장 중간/끝에 붙은 제목을 잡지 못한다(R6-13).
+  if (isChapterTitleNoise(s)) return false;
+  // 잡음: 영어 기능어가 하나도 없는 라틴 문자 문장(라틴어 인용 등 "Duplex libelli dos est…").
+  // 실측: 실제 커밋된 후보 풀 10,652문장에서 새 규칙 두 개가 지운 것은 15건이다.
+  // 13건은 "… Chapter XXIV." 제목 잡음, 1건은 라틴어 인용이고, 나머지 1건은
+  // "Colin really looked quite beautiful, Mary thought."처럼 기능어가 드문 영어 문장이다.
+  // 후보가 훨씬 많으니 이 collateral은 감수한다(R6-13).
+  if (!containsEnglishFunctionWord(w)) return false;
   // 동사 없이 나열된 구(제목·목차) 제외
   const hasVerb = w.some((x) =>
     /(ing|ed|ed'|s)$/.test(x.toLowerCase()) ||
@@ -379,11 +421,7 @@ export function lemma(
   return candidates[0] ?? w;
 }
 
-export function pickHints(
-  sentence: string,
-  stats: CorpusStats,
-  seed = 0,
-): string[] {
+export function pickHints(sentence: string, stats: CorpusStats): string[] {
   const taken = new Set<string>();
   const ranked: { hint: string; rarity: number; rank: number }[] = [];
 
@@ -410,26 +448,58 @@ export function pickHints(
   ranked.sort((a, b) => b.rarity - a.rarity || a.rank - b.rank);
   if (ranked.length === 0) return [];
 
-  // seed는 상위 후보 안에서 순서만 섞는다 (이전 구현의 지터는 seed=0에서 항상 0이었다)
+  // 힌트는 코퍼스 키·캐시와 짝을 이루는 값이라 결정론적이어야 한다.
+  // seed로 순서를 돌리는 로직은 유일한 호출부가 항상 0을 넘겨 죽은 코드였고,
+  // 힌트가 seed에 따라 바뀐다는 오해만 남겼다(resolved.md 결정, R6-14).
   const window = ranked.slice(0, Math.min(ranked.length, 8));
-  if (seed && window.length > 1) {
-    const shift = Math.abs(seed) % window.length;
-    const rotated = [...window.slice(shift), ...window.slice(0, shift)];
-    return rotated.slice(0, 4).map((r) => r.hint);
-  }
   return window.slice(0, 4).map((r) => r.hint);
 }
 
-/** 코퍼스 항목의 저장소 키 (레인 + 정규화 문장의 짧은 해시)
+/** 코퍼스 항목의 저장소 키 (레인 + 정규화 문장의 64비트 해시)
  *  긴 문장을 그대로 넣으면 120자로 잘려 앞부분이 같은 두 문장이 같은 키가 된다.
- *  그래서 길이 + FNV-1a 해시를 쓴다. (저장소 키이므로 암호학적 해시는 필요 없다) */
+ *  32비트 해시(FNV-1a)는 4,400문장 기준 충돌 기대값이 ≈0.2%라, 다른 문장의
+ *  번역·seen 상태를 조용히 끌어온다. 64비트로 넓혀 사실상 0으로 만든다
+ *  (resolved.md 결정: 기존 seen·번역 캐시가 무효화되는 것은 받아들인다).
+ *  저장소 키이므로 암호학적 해시는 필요 없다. */
 export function entryKey(entry: Pick<CorpusEntry, "lane" | "en">): string {
   const normalized = normalizeKey(entry.en);
-  return `${entry.lane}:${normalized.length}:${shortHash(normalized)}`;
+  return `${entry.lane}:${normalized.length}:${hash64(normalized)}`;
+}
+
+/**
+ * 64비트 해시 (저장소 키용).
+ *
+ * tsconfig target이 ES2017이라 BigInt 리터럴을 쓸 수 없고, target을 올리는 것은
+ * 이 앱 전체의 산출물을 바꾸는 일이다. 그래서 독립적인 32비트 FNV-1a 두 개를
+ * 이어 붙인다 — 앞방향/뒤방향 순회와 다른 offset basis를 쓰면 두 조각이 서로
+ * 다른 값을 따른다(충돌 공간은 64비트).
+ */
+const FNV32_PRIME = 0x01000193;
+
+function fnv32(text: string, offsetBasis: number, backwards: boolean): string {
+  let h = offsetBasis >>> 0;
+  if (!backwards) {
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, FNV32_PRIME);
+    }
+  } else {
+    for (let i = text.length - 1; i >= 0; i--) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, FNV32_PRIME);
+    }
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+export function hash64(text: string): string {
+  return (
+    fnv32(text, 0x811c9dc5, false) + fnv32(text, 0x01000193 ^ 0x5f356495, true)
+  );
 }
 
 /** FNV-1a → 36진 문자열 */
-/** 짧은 문자열 해시 (저장소 키로 쓴다) */
+/** 짧은 32비트 해시 (연습 기록 id(practiceId)로 쓴다 — 항목 수가 적어 충돌 위험이 없다) */
 export function shortHash(text: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {

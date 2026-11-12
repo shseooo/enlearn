@@ -1,6 +1,6 @@
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ReviewTab from "../review-tab";
 
 const evaluateMock = vi.fn();
@@ -29,6 +29,15 @@ import {
 } from "@/lib/practice";
 import { localDateString } from "@/lib/corpus";
 
+/*
+ * R6-23(리뷰 5): 아래 day()는 모듈이 불러올 때의 실제 시계로 "오늘"을 계산하고,
+ * ReviewTab은 호출 시점의 시계를 쓴다. 테스트가 로컬 자정을 넘기면(야간 CI 포함)
+ * "어제 연습 → 오늘 복습" 같은 단언이 어긋난다. Date만 가짜로 고정한다.
+ */
+const FIXED_NOW = new Date(2026, 10, 11, 9, 0, 0);
+vi.useFakeTimers({ toFake: ["Date"] });
+vi.setSystemTime(FIXED_NOW);
+
 const day = (offset: number): Date => {
   const d = new Date();
   d.setDate(d.getDate() + offset);
@@ -51,6 +60,13 @@ function practiceYesterday(overrides: { en: string; ko: string; answer: string }
 
 beforeEach(() => {
   window.localStorage.clear();
+  // 자정 테스트가 vi.useRealTimers()로 되돌린 뒤에도 "오늘"이 고정되도록 다시 걸는다.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(FIXED_NOW);
+});
+
+afterAll(() => {
+  vi.useRealTimers();
 });
 
 describe("ReviewTab", () => {

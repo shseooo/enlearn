@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addDays,
   addForReview,
@@ -11,6 +11,7 @@ import {
   lastAnswerFor,
   loadLog,
   logPractice,
+  MAX_RECORDS,
   MAX_SRS,
   nextReviewDate,
   practiceId,
@@ -25,6 +26,16 @@ import {
 } from "../practice";
 import { localDateString } from "../corpus";
 import type { PracticeInput } from "../practice";
+
+/*
+ * "오늘"을 고정한다(R6-23). 아래 day()/today는 모듈이 불러올 때의 실제 시계로
+ * 계산되는데, 테스트 대상(logPractice·dueItems)은 호출 시점의 시계를 쓴다.
+ * 테스트 실행이 로컬 자정을 넘으면 "log[0].date === today" 같은 단언이 깨진다.
+ * Date만 가짜로 바꿔, setTimeout(자정 알림) 등 다른 타이머는 그대로 둔다.
+ */
+const FIXED_NOW = new Date(2026, 10, 11, 9, 0, 0);
+vi.useFakeTimers({ toFake: ["Date"] });
+vi.setSystemTime(FIXED_NOW);
 
 /** 로컬 시각으로 날짜를 만든다 (toISOString은 UTC라 하루가 어긋난다) */
 const day = (offset: number): Date => {
@@ -47,6 +58,14 @@ const record = (overrides: Partial<PracticeInput> = {}): PracticeInput => ({
 
 beforeEach(() => {
   window.localStorage.clear();
+  // 자정 테스트처럼 vi.useRealTimers()로 되돌리는 테스트가 뒤따라 있어도 "오늘"이
+  // 어긋나지 않게 매 테스트 앞에 시계를 다시 고정한다(R6-23).
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(FIXED_NOW);
+});
+
+afterAll(() => {
+  vi.useRealTimers();
 });
 
 describe("날짜 도구", () => {
@@ -88,12 +107,12 @@ describe("연습 기록", () => {
   });
 
   it("상한을 넘으면 가장 오래된 기록부터 버린다", () => {
-    for (let i = 0; i < 415; i++) {
+    for (let i = 0; i < MAX_RECORDS + 15; i++) {
       logPractice(record({ en: `Sentence number ${i} is distinct enough.`, answer: `answer ${i}` }));
     }
     const log = loadLog();
-    expect(log).toHaveLength(400);
-    expect(log[log.length - 1].en).toContain("414");
+    expect(log).toHaveLength(MAX_RECORDS);
+    expect(log[log.length - 1].en).toContain(String(MAX_RECORDS + 14));
   });
 
   it("지난번 답을 다시 찾아준다", () => {
@@ -419,7 +438,9 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
       "문자열 항목",
       null,
     ]);
-    expect(accepted).toBe(1);
+    expect(accepted.stored).toBe(1);
+    // 형식이 맞지 않는 4건(날짜·레인·문자열·null)은 세어 돌아온다(D4-2).
+    expect(accepted.rejected).toBe(4);
     const log = loadLog();
     expect(log).toHaveLength(2);
     const imported = log.find((r) => r.en === "Imported sentence number one.");
@@ -428,11 +449,15 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
     expect(imported?.id).toBeTruthy();
   });
 
-  it("점수는 0~100으로 좁히고, 같은 id·날짜는 새 값으로 바꾼다", () => {
+  it("점수는 0~100으로 좁히고, 같은 id·날짜는 더 최근 시각의 새 값으로 바꾼다", () => {
     logPractice(record({ en: "A sentence to overwrite.", answer: "old", score: 40 }));
+    const [existing] = loadLog();
+    // D2-1(R6-2): 같은 id·날짜는 "시각이 더 최근인 값"이 이긴다. 백업이 실제로
+    // 더 뒤에 만들어진 경우를 써야 대체가 일어난다.
     importLog([
       {
         date: today,
+        ts: existing.ts + 60_000,
         lane: "classic",
         en: "A sentence to overwrite.",
         ko: "덮어쓸 문장.",
@@ -446,13 +471,144 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
     expect(log[0].score).toBe(100);
   });
 
-  it("replace 모드는 기존 기록을 지운다", () => {
-    logPractice(record({ en: "Old record to discard.", answer: "a" }));
+  // D2-1(R6-2): "누가 이기나"가 저장소마다 달랐다. 지금은 네 저장소 모두 최신 우선이다.
+  it("합치기는 더 오래된 백업으로 최근 기록을 덮어쓰지 않는다 (D2-1)", () => {
+    logPractice(record({ en: "Newest answer stays here.", answer: "newest", score: 90 }));
+    const [existing] = loadLog();
+    const result = importLog([
+      { ...existing, answer: "older", score: 10, ts: existing.ts - 60_000 },
+    ]);
+    expect(result.stored).toBe(1);
+    expect(loadLog()).toHaveLength(1);
+    expect(loadLog()[0].answer).toBe("newest");
+    expect(loadLog()[0].score).toBe(90);
+  });
+
+  it("합치기는 더 최근 ts로 갈아타고, 같은 시각이면 기존 값을 남긴다 (D2-1)", () => {
+    logPractice(record({ en: "Older answer sits here.", answer: "older", score: 20 }));
+    const [existing] = loadLog();
+    importLog([
+      { ...existing, answer: "newer", score: 95, ts: existing.ts + 60_000 },
+    ]);
+    expect(loadLog()[0].answer).toBe("newer");
+    // 시각이 같으면 기존 값(이미 화면에서 본 값)이 이긴다.
+    importLog([{ ...loadLog()[0], answer: "same-instant", ts: loadLog()[0].ts }]);
+    expect(loadLog()[0].answer).toBe("newer");
+  });
+
+  it("복습 큐 합치기도 마지막 복습 시각이 더 최근인 값을 남긴다 (D2-1)", () => {
+    addForReview({
+      id: "classic:winner",
+      lane: "classic",
+      en: "Review merge winner.",
+      ko: "복습 병합 승자.",
+    });
+    gradeReview("classic:winner", "knows"); // lastReviewed = 오늘
+    const [stored] = reviewItems();
+    expect(stored.lastReviewed).toBe(today);
+
+    // 더 옛날에 복습한(= 더 오래된) 사본이 들어와도 진행을 되돌리지 않는다.
+    const older = importSrs([
+      {
+        id: "classic:winner",
+        lane: "classic",
+        en: "Review merge winner.",
+        ko: "복습 병합 승자.",
+        stage: 0,
+        due: addDays(today, 1),
+        lapses: 9,
+        lastReviewed: addDays(today, -30),
+      },
+    ]);
+    expect(older.stored).toBe(1);
+    expect(reviewItems()[0].stage).toBe(stored.stage);
+    expect(reviewItems()[0].lapses).toBe(0);
+
+    // 실제 복습이 적힌 더 최근 사본은 받아들여진다.
+    importSrs([
+      {
+        id: "classic:winner",
+        lane: "classic",
+        en: "Review merge winner.",
+        ko: "복습 병합 승자.",
+        stage: 3,
+        due: addDays(today, 21),
+        lapses: 0,
+        lastReviewed: addDays(today, 1),
+      },
+    ]);
+    expect(reviewItems()[0].stage).toBe(3);
+
+    // lastReviewed가 null(미복습)은 가장 오래된 값으로 본다 — 같은 기준의 빈자리 규정.
+    addForReview({
+      id: "classic:null-review",
+      lane: "classic",
+      en: "Review merge null case.",
+      ko: "복습 병합 null.",
+    });
+    importSrs([
+      {
+        id: "classic:null-review",
+        lane: "classic",
+        en: "Review merge null case.",
+        ko: "복습 병합 null.",
+        stage: 2,
+        due: addDays(today, 7),
+        lapses: 0,
+        lastReviewed: today,
+      },
+    ]);
+    expect(reviewItems().find((x) => x.id === "classic:null-review")?.stage).toBe(2);
+  });
+
+  // R5-4(R6-17): en/ko/answer는 clip으로 자르는데 id만 무제한이었다.
+  it("지나치게 긴 id는 잘리지 않고 문장 기준으로 다시 만든다 (R5-4)", () => {
+    const hugeId = "x".repeat(5_000);
+    importLog(
+      [
+        {
+          id: hugeId,
+          date: today,
+          lane: "classic",
+          en: "A record with a runaway id.",
+          ko: "id가 긴 기록.",
+          answer: "a",
+          score: 50,
+        },
+      ],
+      true,
+    );
+    const [recordWithShortId] = loadLog();
+    expect(recordWithShortId.id.length).toBeLessThanOrEqual(200);
+    // id는 화면에 보이는 문장(en) 기준으로 다시 만든다 — lastAnswerFor가 계속 찾는다.
+    expect(recordWithShortId.id).toBe(practiceId("classic", "A record with a runaway id."));
+
+    importSrs(
+      [
+        {
+          id: hugeId,
+          lane: "classic",
+          en: "A queue item with a runaway id.",
+          ko: "id가 긴 큐 항목.",
+          stage: 1,
+          due: addDays(today, 3),
+          lapses: 0,
+          lastReviewed: null,
+        },
+      ],
+      true,
+    );
+    const [queueItem] = reviewItems();
+    expect(queueItem.id.length).toBeLessThanOrEqual(200);
+    expect(queueItem.id).toBe(practiceId("classic", "A queue item with a runaway id."));
+  });
+
+  it("replace 모드는 기존 기록을 지운다", () => {    logPractice(record({ en: "Old record to discard.", answer: "a" }));
     const accepted = importLog(
       [{ date: today, lane: "daily", en: "Fresh record only.", ko: "새 기록.", answer: "b", score: 66 }],
       true,
     );
-    expect(accepted).toBe(1);
+    expect(accepted.stored).toBe(1);
     const log = loadLog();
     expect(log).toHaveLength(1);
     expect(log[0].en).toBe("Fresh record only.");
@@ -460,7 +616,7 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
 
   it("유효한 항목이 하나도 없으면 저장소를 건드리지 않는다", () => {
     const before = window.localStorage.getItem("enlearn.log.v1");
-    expect(importLog([{ nope: 1 }, "x"])).toBe(0);
+    expect(importLog([{ nope: 1 }, "x"]).stored).toBe(0);
     expect(window.localStorage.getItem("enlearn.log.v1")).toBe(before);
   });
 
@@ -507,8 +663,8 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
     logPractice(record({ en: "Real practice three here.", answer: "c" }));
     const before = loadLog().map((r) => r.en);
 
-    // MAX_RECORDS(400)와 같은 개수로 채운다 (그 상수는 저장소 안에서만 쓴다)
-    const flooded = Array.from({ length: 400 }, (_, i) => ({
+    // MAX_RECORDS와 같은 개수로 채운다 (상한 트림이 실제 기록을 이기지 못한다)
+    const flooded = Array.from({ length: MAX_RECORDS }, (_, i) => ({
       id: `future-${i}`,
       date: "2099-01-01",
       ts: Date.parse("2099-01-01T00:00:00Z"),
@@ -517,8 +673,10 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
       answer: "x",
       score: 10,
     }));
-    // 거부된 개수는 0으로 돌아온다 — 성공처럼 보이면 안 된다
-    expect(importLog(flooded)).toBe(0);
+    // 거부된 개수는 stored 0 · rejected MAX_RECORDS로 돌아온다 — 성공처럼 보이면 안 된다
+    const floodedResult = importLog(flooded);
+    expect(floodedResult.stored).toBe(0);
+    expect(floodedResult.rejected).toBe(MAX_RECORDS);
     expect(loadLog().map((r) => r.en)).toEqual(before);
   });
 
@@ -528,7 +686,8 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
       { id: "skew-2", date: addDays(today, 2), lane: "daily", en: "Clock two days ahead.", answer: "b" },
       { id: "ancient", date: "0001-01-01", lane: "daily", en: "Impossible old date here.", answer: "c" },
     ]);
-    expect(accepted).toBe(1);
+    expect(accepted.stored).toBe(1);
+    expect(accepted.rejected).toBe(2);
     const [one] = loadLog();
     expect(one.en).toBe("Clock one day ahead.");
     // 저장소에 미래 날짜를 남기지 않는다 — 상한 트림의 정렬 키가 깨지지 않는다
@@ -576,7 +735,7 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
         lastReviewed: null,
       },
     ]);
-    expect(accepted).toBe(1);
+    expect(accepted.stored).toBe(1);
     const [item] = reviewItems();
     expect(item.stage).toBe(1);
     expect(item.due).toBe(addDays(today, 3));
@@ -667,8 +826,8 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
     setItem("enlearn.log.v1", before!);
   });
 
-  it("백업으로 500개를 넘겨도 400개만 저장되고 실제 개수를 알려준다", () => {
-    const items = Array.from({ length: 500 }, (_, i) => ({
+  it("백업이 상한을 넘기면 최근 기록이 남고 잘린 개수를 알려준다", () => {
+    const items = Array.from({ length: MAX_RECORDS + 100 }, (_, i) => ({
       id: `bulk-${i}`,
       date: `2026-01-${String((i % 28) + 1).padStart(2, "0")}`,
       ts: 1_700_000_000_000 + i,
@@ -679,12 +838,16 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
       score: 50,
       corrections: [],
     }));
-    expect(importLog(items)).toBeLessThanOrEqual(400);
-    expect(practiceStats().total).toBe(400);
+    const result = importLog(items);
+    expect(result.stored).toBe(MAX_RECORDS);
+    // 상한으로 잘린 개수가 별도로 드러난다(D4-2/R6-3).
+    expect(result.trimmed).toBe(100);
+    expect(result.rejected).toBe(0);
+    expect(practiceStats().total).toBe(MAX_RECORDS);
   });
 
   it("대체(replace)도 상한으로 잘린 개수가 아니라 실제 저장 개수를 알려준다 (리뷰 1-4)", () => {
-    const items = Array.from({ length: 500 }, (_, i) => ({
+    const items = Array.from({ length: MAX_RECORDS + 100 }, (_, i) => ({
       id: `replace-${i}`,
       date: `2026-01-${String((i % 28) + 1).padStart(2, "0")}`,
       ts: 1_700_000_000_000 + i,
@@ -705,10 +868,44 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
       corrections: [],
     });
 
-    expect(importLog(items, true)).toBe(400);
-    expect(practiceStats().total).toBe(400);
-    expect(loadLog().some((r) => r.id === "replace-499")).toBe(true);
+    const result = importLog(items, true);
+    expect(result.stored).toBe(MAX_RECORDS);
+    expect(result.trimmed).toBe(100);
+    expect(practiceStats().total).toBe(MAX_RECORDS);
+    expect(loadLog().some((r) => r.id === `replace-${MAX_RECORDS + 99}`)).toBe(true);
     expect(loadLog().some((r) => r.id === "replace-0")).toBe(false);
+  });
+
+  // R6-7: 대체 경로는 파일에 적힌 순서로 잘랐다. 내림차순 백업에서는 가장 최근
+  // 기록이 먼저 버려지고 가장 오래된 기록이 남았다 — 병합 경로와 정반대다.
+  it("대체(replace)는 파일 순서가 아니라 날짜 기준으로 잘린다 (R6-7)", () => {
+    const total = MAX_RECORDS + 100;
+    // 백업의 첫 줄이 가장 최근인(날짜 내림차순) 파일처럼 만든다.
+    const descending = Array.from({ length: total }, (_, i) => ({
+      id: `desc-${total - 1 - i}`,
+      date: addDays(today, -i),
+      ts: 1_700_000_000_000 + (total - 1 - i),
+      lane: "classic",
+      en: `Descending record ${i}.`,
+      answer: "x",
+      score: 50,
+    }));
+    const result = importLog(descending, true);
+    expect(result.stored).toBe(MAX_RECORDS);
+    expect(result.trimmed).toBe(100);
+    const log = loadLog();
+    // 살아남는 것은 가장 최근 날짜의 기록이고, 가장 오래된 100건이 버려진다.
+    expect(log.some((r) => r.id === `desc-${total - 1}`)).toBe(true);
+    expect(log.some((r) => r.id === "desc-0")).toBe(false);
+    const keptDates = log.map((r) => r.date);
+    const droppedIds = new Set(log.map((r) => r.id));
+    const droppedDates = descending
+      .filter((item) => !droppedIds.has(item.id))
+      .map((item) => item.date);
+    const oldestKept = keptDates.reduce((min, d) => (d < min ? d : min), keptDates[0]);
+    const newestDropped = droppedDates.reduce((max, d) => (d > max ? d : max), droppedDates[0]);
+    // 잘린 것은 최신 쪽이 아니라 옛날 쪽이어야 한다.
+    expect(newestDropped < oldestKept).toBe(true);
   });
 
   it("대체할 항목이 0개면 저장소도 비워진다", () => {
@@ -721,7 +918,7 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
       corrections: [],
     });
     expect(practiceStats().total).toBe(1);
-    expect(importLog([], true)).toBe(0);
+    expect(importLog([], true).stored).toBe(0);
     expect(practiceStats().total).toBe(0);
   });
 
@@ -736,7 +933,7 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
       lapses: 0,
       lastReviewed: null,
     }));
-    const stored = importSrs(many);
+    const stored = importSrs(many).stored;
     expect(stored).toBeLessThanOrEqual(MAX_SRS);
     const items = reviewItems();
     expect(items.length).toBe(MAX_SRS);
@@ -789,7 +986,8 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
       { id: "classic:nodue", lane: "classic", en: "Missing due here.", ko: "due 없는 항목." },
       { id: "classic:ok", lane: "classic", due: "2026-06-01", en: "Surviving queue item.", ko: "남는 큐 항목." },
     ]);
-    expect(acceptedSrs).toBe(1);
+    expect(acceptedSrs.stored).toBe(1);
+    expect(acceptedSrs.rejected).toBe(6);
     expect(reviewItems().map((x) => x.id)).toEqual(["classic:ok"]);
 
     const acceptedLog = importLog([
@@ -804,7 +1002,8 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
         corrections: ["문자열 교정", { original: 1, better: "x" }, { original: "goed", better: "went" }],
       },
     ]);
-    expect(acceptedLog).toBe(1);
+    expect(acceptedLog.stored).toBe(1);
+    expect(acceptedLog.rejected).toBe(1);
     expect(loadLog()[0].corrections).toEqual([{ original: "goed", better: "went" }]);
   });
 
@@ -838,7 +1037,7 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
           score: 1,
           corrections: [],
         },
-      ]),
+      ]).stored,
     ).toBe(0);
     expect(practiceStats().total).toBe(before);
     restoreWrites();

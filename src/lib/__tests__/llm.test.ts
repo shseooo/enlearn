@@ -491,6 +491,85 @@ describe("chatCompletion", () => {
     controller.abort();
     await expect(pending).rejects.toThrow(/요청을 취소했습니다/);
   });
+
+  /*
+   * R6-20: 취소·재시도의 가장자리가 테스트에 한 번도 지나가지 않았다.
+   * 실제 사용자(취소 버튼)가 이런 경로로 나간다.
+   */
+  it("재시도 대기를 기다리는 중에 취소하면 남은 시도를 포기한다", async () => {
+    const controller = new AbortController();
+    const m = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        // 429를 받은 직후 취소가 들어온다 — 백오프 대기(sleep)가 취소로 끝난다.
+        setTimeout(() => controller.abort(), 0);
+        return mockFetchError(429, { retryAfter: "600" });
+      })
+      .mockResolvedValue(mockOkResponse({ choices: [{ message: { content: "ok" } }] }));
+    vi.stubGlobal("fetch", m);
+
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }], {
+        signal: controller.signal,
+        // Retry-After 600초(상한 15초)를 기다리지 않고 끝나는지가 이 테스트의 내용이다.
+        retryDelayMs: 60_000,
+      }),
+    ).rejects.toThrow(/요청을 취소했습니다/);
+    expect(m).toHaveBeenCalledTimes(1);
+  });
+
+  it("이미 취소된 signal로는 요청을 한 번도 보내지 않는다", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const m = mockFetchOk({ choices: [{ message: { content: "ok" } }] });
+
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }], {
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(/요청을 취소했습니다/);
+    expect(m).not.toHaveBeenCalled();
+  });
+
+  it("본문이 비어 있는데 취소까지 됐으면 오류 대신 취소 문구를 던진다", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => "application/json" },
+      text: async () => {
+        // 본문을 다 읽기 전에 취소가 도착한 상황 — 빈 본문이 "형식 오류"로 보인다.
+        controller.abort();
+        return "";
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      chatCompletion(settings, [{ role: "user", content: "hi" }], {
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(/요청을 취소했습니다/);
+  });
+
+  it("Retry-After가 이미 지난 HTTP-date면 기다리지 않고 다시 시도한다", async () => {
+    const m = vi
+      .fn()
+      .mockResolvedValueOnce(
+        mockFetchError(503, { retryAfter: "Wed, 21 Oct 2015 07:28:00 GMT" }),
+      )
+      .mockResolvedValueOnce(mockOkResponse({ choices: [{ message: { content: "ok" } }] }));
+    vi.stubGlobal("fetch", m);
+
+    const started = Date.now();
+    const out = await chatCompletion(settings, [{ role: "user", content: "hi" }], {
+      retryDelayMs: 60_000, // 이 기반 시간을 쓰면 이 테스트는 시간을 다 쓴다
+    });
+    expect(out).toBe("ok");
+    expect(m).toHaveBeenCalledTimes(2);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
 });
 
 describe("evaluateFreeWriting", () => {

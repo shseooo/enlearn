@@ -97,9 +97,15 @@ export function parseTranslationBatch(
     if (typeof item !== "object" || item === null) continue;
     const o = item as Record<string, unknown>;
     const ko = typeof o.ko === "string" ? o.ko.trim() : "";
-    // "네." 성의 없는 번역이 코퍼스에 들어가면 화면이 이상해진다. 구두점 빼고 3자 이상.
+    // "네." 성의 없는 번역이 코퍼스에 들어가면 화면이 이상해진다. 주석의 약속대로 구두점 빼고 3자 이상(R5-6).
     const compact = ko.replace(/[\s.,!?…"'“”‘’()\[\]·\-]/g, "");
-    if (!hasHangul(ko) || compact.length < 2) continue;
+    if (!hasHangul(ko) || compact.length < 3) {
+      // 조용히 넘기면 "왜 이 문장은 번역이 없지"를 추적할 수 없다(리뷰 2-1과 같은 이유).
+      if (ko) {
+        onReject?.(`번역이 너무 짧습니다(구두점 빼고 ${compact.length}자): ${ko.slice(0, 20)}`);
+      }
+      continue;
+    }
 
     const rawIndex = o.i ?? o.index ?? o.n;
     const hasIndex = typeof rawIndex === "number" && Number.isInteger(rawIndex);

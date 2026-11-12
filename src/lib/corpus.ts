@@ -8,13 +8,15 @@ import type {
   CorpusFile,
   CorpusLane,
   Difficulty,
+  ImportResult,
 } from "./types";
 import { entryKey } from "./corpus-tools";
 import { parseStored, safeSetItem } from "./storage";
 
-// v2: entryKey가 해시 기반으로 바뀌어 v1 값은 재사용할 수 없다 (기록 초기화).
-const SEEN_KEY = "enlearn.seen.v2";
-const KO_CACHE_KEY = "enlearn.kocache.v2";
+// v3: entryKey가 32비트 → 64비트 해시로 바뀌어 v2 값은 재사용할 수 없다 (기록 초기화).
+// 결정(resolved.md)대로 마이그레이션은 하지 않는다 — seen·번역 캐시는 다시 채우면 되는 캐시다.
+const SEEN_KEY = "enlearn.seen.v3";
+const KO_CACHE_KEY = "enlearn.kocache.v3";
 
 /**
  * 저장소 상한. 이 값들을 넘기면 브라우저 용량(보통 5MB)을 건드릴 수 있고,
@@ -513,6 +515,19 @@ export function exportKoreanCache(): Record<string, CachedKorean> {
 }
 
 /**
+ * ISO 시각 문자열 두 개를 비교한다. normalizeSeenValue가 형식을 검사했지만
+ * 시간대 표기(+09:00 / Z)가 다르면 문자열 비교가 어긋나므로 시각으로 비교한다.
+ * 파싱되지 않는 값은 낡은 쪽으로 본다(살아남아야 할 최근 기록을 밀지 않게).
+ */
+function isNewerIso(candidate: string, existing: string): boolean {
+  const a = Date.parse(candidate);
+  const b = Date.parse(existing);
+  if (!Number.isFinite(a)) return false;
+  if (!Number.isFinite(b)) return true;
+  return a > b;
+}
+
+/**
  * seen의 값은 "본 시각"이다. trimSeen이 그 문자열 순서로 오래된 항목부터 버리기
  * 때문에, 형식 밖의 값("asdf" 같은)이 섞이면 살아남아야 할 최근 문장이 먼저 밀려난다.
  * 다른 저장소(log/srs/번역 캐시)는 값을 검사하므로 seen만 예외였다(리뷰 3-6).
@@ -542,29 +557,43 @@ function normalizeSeenValue(value: unknown, nowIso: string): string | null {
   return value;
 }
 
-/** 받은 문장 기록을 합친다(기본) 또는 대체한다. 잘못된 항목은 걸러낸다. */
-export function importSeen(value: unknown, replace = false): number {
-  if (typeof window === "undefined") return 0;
+/** 받은 문장 기록을 합친다(기본) 또는 대체한다. 잘못된 항목은 걸러낸다.
+ * 합치기는 같은 키에서 더 최근 시각이 이긴다(D2-1). 시각이 같으면 기존 값이 남는다. */
+export function importSeen(value: unknown, replace = false): ImportResult {
+  if (typeof window === "undefined") return { stored: 0, rejected: 0, trimmed: 0 };
   const nowIso = new Date().toISOString();
   const incoming: SeenMap = {};
-  if (isPlainObject(value)) {
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (k.length === 0 || k.length > 80) continue;
-      const seenAt = normalizeSeenValue(v, nowIso);
-      if (seenAt !== null) incoming[k] = seenAt;
+  let rejected = 0;
+  const provided = isPlainObject(value)
+    ? Object.entries(value as Record<string, unknown>)
+    : [];
+  for (const [k, v] of provided) {
+    if (k.length === 0 || k.length > 80) {
+      rejected++;
+      continue;
     }
+    const seenAt = normalizeSeenValue(v, nowIso);
+    if (seenAt === null) rejected++;
+    else incoming[k] = seenAt;
   }
   if (replace) {
     safeSetItem(SEEN_KEY, JSON.stringify(trimSeen(incoming)));
     notifyProgressOnce();
-    return seenCount();
+    const stored = seenCount();
+    return { stored, rejected, trimmed: Object.keys(incoming).length - stored };
   }
-  const merged = trimSeen({ ...loadSeen(), ...incoming });
-  safeSetItem(SEEN_KEY, JSON.stringify(merged));
+  const merged = { ...loadSeen() };
+  for (const [k, seenAt] of Object.entries(incoming)) {
+    const existing = merged[k];
+    if (existing === undefined || isNewerIso(seenAt, existing)) merged[k] = seenAt;
+  }
+  const trimmedStore = trimSeen(merged);
+  safeSetItem(SEEN_KEY, JSON.stringify(trimmedStore));
   notifyProgressOnce();
   // 실제로 남은 개수만 알려준다 (상한으로 잘렸을 수 있다)
-  const stored = loadSeen();
-  return Object.keys(incoming).filter((k) => stored[k] !== undefined).length;
+  const storedMap = loadSeen();
+  const kept = Object.keys(incoming).filter((k) => storedMap[k] !== undefined).length;
+  return { stored: kept, rejected, trimmed: Object.keys(incoming).length - kept };
 }
 
 /**
@@ -586,25 +615,37 @@ function normalizeCachedKorean(value: unknown): CachedKorean | null {
 }
 
 /** 한국어 번역 캐시를 합친다(기본) 또는 대체한다. */
-export function importKoreanCache(value: unknown, replace = false): number {
-  if (typeof window === "undefined") return 0;
+export function importKoreanCache(
+  value: unknown,
+  replace = false,
+): ImportResult {
+  if (typeof window === "undefined") return { stored: 0, rejected: 0, trimmed: 0 };
   const incoming: Record<string, CachedKorean> = {};
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (k.length === 0 || k.length > 80) continue;
-      const normalized = normalizeCachedKorean(v);
-      if (normalized) incoming[k] = normalized;
+  let rejected = 0;
+  const provided =
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? Object.entries(value as Record<string, unknown>)
+      : [];
+  for (const [k, v] of provided) {
+    if (k.length === 0 || k.length > 80) {
+      rejected++;
+      continue;
     }
+    const normalized = normalizeCachedKorean(v);
+    if (normalized) incoming[k] = normalized;
+    else rejected++;
   }
   if (replace) {
     safeSetItem(KO_CACHE_KEY, JSON.stringify(trimKoreanCache(incoming)));
     notifyProgressOnce();
-    return koreanCacheCount();
+    const stored = koreanCacheCount();
+    return { stored, rejected, trimmed: Object.keys(incoming).length - stored };
   }
-  // 기존 캐시를 우선한다 (화면에 보여 이미 검증된 번역을 덮어쓰지 않는다)
+  // 기존 캐시를 우선한다 (화면에 보여 이미 검증된 번역을 덮어쓰지 않는다 — D2-1)
   const merged = trimKoreanCache({ ...incoming, ...exportKoreanCache() });
   safeSetItem(KO_CACHE_KEY, JSON.stringify(merged));
   notifyProgressOnce();
-  const stored = readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
-  return Object.keys(incoming).filter((k) => stored[k] !== undefined).length;
+  const storedMap = readJson<Record<string, CachedKorean>>(KO_CACHE_KEY, {});
+  const kept = Object.keys(incoming).filter((k) => storedMap[k] !== undefined).length;
+  return { stored: kept, rejected, trimmed: Object.keys(incoming).length - kept };
 }

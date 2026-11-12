@@ -147,4 +147,18 @@ describe("SettingsTab — 연결 테스트 취소 (리뷰 3-10)", () => {
       /Host를 확인할 수 없습니다/,
     );
   });
+
+  // R6-19(리뷰 5): 성공 배너는 이 화면의 유일한 "정상" 신호인데 테스트가 없었다.
+  it("연결 테스트가 성공하면 응답 조각을 배너로 보여준다 (R6-19)", async () => {
+    testConnectionMock.mockResolvedValue("pong");
+
+    render(<SettingsTab settings={settings} onSaved={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /연결 테스트/ }));
+
+    expect(await screen.findByText(/연결 성공! LLM 응답: pong/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /연결 테스트/ })).toBeEnabled();
+  });
 });

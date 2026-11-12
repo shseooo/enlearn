@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // npm run coverage가 만든 리포트(lint할 사람이 쓴 코드가 아니다). .gitignore에도 있다.
+    "coverage/**",
   ]),
 ]);
 
