@@ -6,6 +6,7 @@ import {
   parseBackup,
   restoreBackup,
   settingsWarning,
+  type BackupSection,
   type RawBackupFile,
 } from "@/lib/backup";
 import {
@@ -24,7 +25,22 @@ import {
  * 읽어보기 전에 거르는 파일 크기 상한(리뷰 1-16). 실제 백업은 수백 KB이고,
  * 수백 MB JSON을 file.text()로 읽으면 메인 스레드가 멈춘다.
  */
+/** 읽어보기 전에 거르는 파일 크기 상한(리뷰 1-16). 실제 백업은 수백 KB이고,
+ * 수백 MB JSON을 file.text()로 읽으면 메인 스레드가 멈춘다.
+ */
 const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
+
+/** D8-1: 저장소를 사람 이름으로 적는다(없는 섹션을 알려주는 문구에 쓴다). */
+const SECTION_LABELS: Record<BackupSection, string> = {
+  log: "연습 기록",
+  srs: "복습 큐",
+  seen: "받은 문장 기록",
+  koreanCache: "번역 캐시",
+};
+
+function sectionCount(name: string, present: boolean, count: number): string {
+  return present ? `${name} ${count}개` : `${name} 없음`;
+}
 
 export default function BackupCard() {
   const snapshot = useSyncExternalStore(
@@ -100,13 +116,18 @@ export default function BackupCard() {
     // R7-1: 상한으로 잘린 것과 합치기에서 밀린 것을 같은 문구로 보여주면
     // 사용자는 "저장소 상한" 때문에 기록을 지워야 한다고 오해한다.
     const notApplied = sum(result.merged);
+    // D8-1: 파일에 없어서 손대지 않은 저장소는 "0개"가 아니라 "그대로 남음"이다.
+    const keptAsIs = result.omitted.map((name) => SECTION_LABELS[name]).join("·");
+    const countOf = (name: BackupSection, text: string, value: number) =>
+      result.omitted.includes(name) ? null : `${text} ${value}개`;
     setMessage(
       [
-        `기록 ${result.log}개`,
-        `복습 큐 ${result.srs}개`,
-        `받은 문장 ${result.seen}개`,
-        `번역 캐시 ${result.koreanCache}개`,
-        result.settingsRestored ? "연결 설정" : null,
+        countOf("log", "기록", result.log),
+        countOf("srs", "복습 큐", result.srs),
+        countOf("seen", "받은 문장", result.seen),
+        countOf("koreanCache", "번역 캐시", result.koreanCache),
+      result.settingsRestored ? "연결 설정" : null,
+        keptAsIs ? `이 백업에 없는 섹션: ${keptAsIs} (그대로 남음)` : null,
         trimmed > 0 ? `${trimmed}건은 저장소 상한으로 제외` : null,
         // R8-6: "더 최근 기록이 있어"는 번역 캐시에는 맞지 않는다(kocache는 시각 정보가
         // 없어 기존 값 우선 — D2-1). 네 저장소에 모두 참인 말로 쓴다.
@@ -119,6 +140,25 @@ export default function BackupCard() {
     setError(null);
   }
 
+  /**
+   * D1-1/R8-2: 실제로 지우는 저장소를 모두 적고, D8-1: 파일에 없어서 그대로 남는
+   * 저장소도 함께 알려준다. "0개로 대체"와 "그대로 남음"은 사용자가 내리는 판단이 다르다.
+   */
+  function confirmReplace(): boolean {
+    if (!loaded) return false;
+    const absent = (Object.keys(loaded.present) as BackupSection[]).filter(
+      (name) => !loaded.present[name],
+    );
+    return window.confirm(
+      "기존 연습 기록·복습 큐·받은 문장 기록·한국어 번역 캐시를 지우고 " +
+        "백업 내용으로 대체합니다. " +
+        (absent.length > 0
+          ? `이 백업에 없는 섹션(${absent.map((n) => SECTION_LABELS[n]).join("·")})은 그대로 남습니다. `
+          : "") +
+        "되돌릴 수 없습니다 — 먼저 백업을 내보내세요. 계속할까요?",
+    );
+  }
+
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5">
       <h2 className="mb-1 text-base font-bold text-slate-800">백업 · 복구</h2>
@@ -128,7 +168,10 @@ export default function BackupCard() {
         <strong className="font-semibold text-slate-700">API 키는 백업에 들어가지 않습니다.</strong>
       </p>
       <p className="mb-3 text-xs leading-relaxed text-slate-500">
-        합치기는 더 최근 기록을 남깁니다. 백업 내용을 그대로 되돌리려면{" "}
+        {/* D8-2: 한 문장으로 네 저장소를 같이 설명하면 번역 캐시에 거짓말이 된다
+            (번역은 시각 비교 없이 기존 값 우선 — D2-1). 저장은 바꾸지 않고 말만 나눈다. */}
+        합치기는 연습 기록·복습 큐·받은 문장에서 더 최근 기록을 남깁니다. 이미 번역된
+        문장의 번역은 백업으로 바뀌지 않습니다. 백업 내용 그대로 되돌리려면{" "}
         『기존 기록을 지우고 대체』를 사용하세요.
       </p>
 
@@ -164,8 +207,14 @@ export default function BackupCard() {
               : "날짜 없는 백업"}
           </p>
           <p className="mb-3">
-            기록 {loaded.counts.log}개 · 복습 큐 {loaded.counts.srs}개 · 받은 문장{" "}
-            {loaded.counts.seen}개 · 번역 캐시 {loaded.counts.koreanCache}개
+            {sectionCount("기록", loaded.present.log, loaded.counts.log)} ·{" "}
+            {sectionCount("복습 큐", loaded.present.srs, loaded.counts.srs)} ·{" "}
+            {sectionCount("받은 문장", loaded.present.seen, loaded.counts.seen)} ·{" "}
+            {sectionCount(
+              "번역 캐시",
+              loaded.present.koreanCache,
+              loaded.counts.koreanCache,
+            )}
           </p>
           {loaded.data.settings && (
             <label className="mb-3 flex items-start gap-2 text-xs text-slate-600">
@@ -204,15 +253,7 @@ export default function BackupCard() {
             <button
               type="button"
               onClick={() => {
-                if (
-                  window.confirm(
-                    // R8-2: 실제로 지우는 네 저장소를 모두 적는다. 받은 문장 기록(seen)은
-                    // 백업에 섹션이 없으면 빈 값으로 대체되어 사라지는데, 문구가 빠지면
-                    // "기록은 남는 줄 알고" 2만 건을 잃는다(D1-1의 "되돌릴 수 없음" 고지).
-                    "기존 연습 기록·복습 큐·받은 문장 기록·한국어 번역 캐시를 지우고 " +
-                      "백업 내용으로 대체합니다. 되돌릴 수 없습니다 — 먼저 백업을 내보내세요. 계속할까요?",
-                  )
-                ) {
+                if (confirmReplace()) {
                   handleRestore(true);
                 }
               }}

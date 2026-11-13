@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import type { LLMSettings, EvaluationResult } from "@/lib/types";
 import { isSettingsComplete } from "@/lib/settings";
-import { evaluateFreeWriting } from "@/lib/llm";
+import { evaluateFreeWriting, MAX_LLM_INPUT_CHARS } from "@/lib/llm";
 import { useCancellable } from "@/lib/use-cancellable";
 import { logPractice } from "@/lib/practice";
 import EvaluationCard from "./evaluation-card";
@@ -28,8 +28,14 @@ export default function FreeWritingTab({
   // 어떤 호출의 결과를 적용할지 정는 번호. 취소·새 요청 모두 여기서 걸러진다.
   const requestSeq = useRef(0);
 
+  // D7-1: 입력을 자르지 않는다(자른 문장을 평가하면 사용자는 전체가 평가된 줄 안다).
+  // 대신 상한을 넘기면 제출을 막고 현재 길이를 말한다.
+  const tooLong = sentence.trim().length > MAX_LLM_INPUT_CHARS;
   const canSubmit =
-    isSettingsComplete(settings) && sentence.trim().length > 0 && !loading;
+    isSettingsComplete(settings) &&
+    sentence.trim().length > 0 &&
+    !tooLong &&
+    !loading;
 
   async function handleSubmit() {
     const trimmed = sentence.trim();
@@ -83,8 +89,14 @@ export default function FreeWritingTab({
           className="w-full resize-y rounded-xl border border-slate-300 p-3 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
         />
         <div className="mt-3 flex items-center justify-between gap-3">
-          <span className="text-xs text-slate-400">
-            {sentence.trim() ? `${sentence.trim().length}자 입력됨` : "문장을 입력하세요"}
+          <span
+            className={tooLong ? "text-xs text-rose-600" : "text-xs text-slate-400"}
+          >
+            {tooLong
+              ? `${MAX_LLM_INPUT_CHARS}자까지 평가할 수 있습니다(현재 ${sentence.trim().length}자)`
+              : sentence.trim()
+                ? `${sentence.trim().length}자 입력됨`
+                : "문장을 입력하세요"}
           </span>
           <button
             type="button"

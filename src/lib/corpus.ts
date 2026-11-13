@@ -25,7 +25,13 @@ const KO_CACHE_KEY = "enlearn.kocache.v3";
  * seen 20,000건 ≈ 0.9MB + 번역 캐시 4,000건 ≈ 0.4MB ≈ 1.3MB가 그 예다. 사용자는
  * "저장 공간이 가득 찼습니다" 안내를 보고 기록을 정리해도 그 실패가 왜 안 풀리는지 알 수 없다.
  */
-const LEGACY_KEYS = ["enlearn.seen.v2", "enlearn.kocache.v2"];
+const LEGACY_KEYS = [
+  "enlearn.seen.v2",
+  "enlearn.kocache.v2",
+  // D6-5: practiceId가 32비트 → 64비트 해시로 바뀌어 v1의 id를 v2에서 다시 쓸 수 없다.
+  "enlearn.log.v1",
+  "enlearn.srs.v1",
+];
 
 /** 죽은 옛 키를 지운다(값을 옮기지 않는다). 실패해도 무시한다 — 화면 기능과 무관하다. */
 export function clearLegacyStorageKeys(): void {

@@ -13,6 +13,7 @@ import {
   DIFFICULTY_LABELS,
   evaluateTranslation,
   generateKoreanExercise,
+  MAX_LLM_INPUT_CHARS,
   translateSentenceToKorean,
 } from "@/lib/llm";
 import {
@@ -127,11 +128,15 @@ export default function TranslationTab({
 
   const canPick =
     !picking && !loading && (isCorpus || isSettingsComplete(settings));
+  // D7-1: 입력을 자르지 않는다. 상한을 넘으면 제출을 막고 현재 길이를 말한다
+  // (같은 상한을 llm.ts에서도 지킨다 — 화면을 거치지 않는 호출도 있으므로).
+  const answerTooLong = answer.trim().length > MAX_LLM_INPUT_CHARS;
   const canEvaluate =
     isSettingsComplete(settings) &&
     !picking &&
     korean.length > 0 &&
     answer.trim().length > 0 &&
+    !answerTooLong &&
     !loading;
 
   /**
@@ -520,7 +525,16 @@ export default function TranslationTab({
             placeholder="여기에 영어 번역을 입력하세요"
             className="w-full resize-y rounded-xl border border-slate-300 p-3 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
           />
-          <div className="mt-3 flex justify-end">
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <span
+              className={answerTooLong ? "text-xs text-rose-600" : "text-xs text-slate-400"}
+            >
+              {answerTooLong
+                ? `${MAX_LLM_INPUT_CHARS}자까지 평가할 수 있습니다(현재 ${answer.trim().length}자)`
+                : answer.trim()
+                  ? `${answer.trim().length}자 입력됨`
+                  : "번역을 입력하세요"}
+            </span>
             <button
               type="button"
               onClick={handleEvaluate}

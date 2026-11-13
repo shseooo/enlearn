@@ -121,6 +121,28 @@ describe("연습 기록", () => {
     expect(lastAnswerFor(id)).toBe("Alice begin to get tired.");
     expect(lastAnswerFor("없는-id")).toBeNull();
   });
+
+  /*
+   * D6-5: 연습 기록·복습 큐의 id도 64비트 해시를 쓴다. 32비트면 기록 2,000건에서
+   * 충돌 기대값이 0.1% 수준이고, 충돌한 두 문장이 하나의 진행 상태로 묶인다
+   * (logPractice의 id|date 키와 gradeReview의 findIndex가 둘을 하나로 다룬다).
+   */
+  it("practiceId는 64비트 해시를 쓴다 (D6-5)", () => {
+    const id = practiceId("classic", "Alice was beginning to get very tired.");
+    // lane:정규화 길이:16자리 16진(서로 다른 32비트 두 조각)
+    expect(id).toMatch(/^classic:\d+:[0-9a-f]{16}$/);
+    // 앞부분이 같은 두 문장도 다른 키여야 한다(잘린 해시가 아니므로).
+    const a = practiceId("classic", "The little girl opened the door and saw the white rabbit.");
+    const b = practiceId(
+      "classic",
+      "The little girl opened the door and saw the white rabbit, then ran away.",
+    );
+    expect(a).not.toBe(b);
+    // 정규화(공백·대소문자)는 그대로다.
+    expect(practiceId("classic", "  A Sentence   here. ")).toBe(
+      practiceId("classic", "a sentence here."),
+    );
+  });
 });
 
 describe("연습 통계", () => {
@@ -309,12 +331,12 @@ describe("화면 구독 스냅샷", () => {
     const cleanup = subscribeToPractice(() => {
       called += 1;
     });
-    window.dispatchEvent(new StorageEvent("storage", { key: "enlearn.log.v1" }));
+    window.dispatchEvent(new StorageEvent("storage", { key: "enlearn.log.v2" }));
     expect(called).toBe(1);
     logPractice(record({})); // 같은 탭의 변경은 자체 이벤트로 알린다
     expect(called).toBe(2);
     cleanup();
-    window.dispatchEvent(new StorageEvent("storage", { key: "enlearn.log.v1" }));
+    window.dispatchEvent(new StorageEvent("storage", { key: "enlearn.log.v2" }));
     expect(called).toBe(2);
   });
 
@@ -706,9 +728,9 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
   });
 
   it("유효한 항목이 하나도 없으면 저장소를 건드리지 않는다", () => {
-    const before = window.localStorage.getItem("enlearn.log.v1");
+    const before = window.localStorage.getItem("enlearn.log.v2");
     expect(importLog([{ nope: 1 }, "x"]).stored).toBe(0);
-    expect(window.localStorage.getItem("enlearn.log.v1")).toBe(before);
+    expect(window.localStorage.getItem("enlearn.log.v2")).toBe(before);
   });
 
   // 리뷰 3-7: 백업 경로는 20개, 읽기는 5개였다. logPractice 한 번이 잘린 개수로
@@ -734,7 +756,7 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
     );
 
     const storedRaw = () =>
-      JSON.parse(window.localStorage.getItem("enlearn.log.v1") ?? "[]") as {
+      JSON.parse(window.localStorage.getItem("enlearn.log.v2") ?? "[]") as {
         corrections: unknown[];
       }[];
     expect(loadLog()[0].corrections).toHaveLength(5);
@@ -789,7 +811,7 @@ describe("백업으로 복원 (기록·복습 큐)", () => {
   it("이미 저장된 미래 날짜는 읽을 때 바로잡는다 (리뷰 4-4)", () => {
     // 손으로 고치거나 옛 버전이 남긴 저장소: 값 자체는 버리지 않고 오늘로 끌어내린다.
     window.localStorage.setItem(
-      "enlearn.log.v1",
+      "enlearn.log.v2",
       JSON.stringify([
         {
           id: "broken-clock",
@@ -902,7 +924,7 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
       score: 70,
       corrections: [],
     });
-    const before = window.localStorage.getItem("enlearn.log.v1");
+    const before = window.localStorage.getItem("enlearn.log.v2");
     failWrites();
     expect(() =>
       logPractice({
@@ -914,9 +936,9 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
         corrections: [],
       }),
     ).not.toThrow();
-    expect(window.localStorage.getItem("enlearn.log.v1")).toBe(before);
+    expect(window.localStorage.getItem("enlearn.log.v2")).toBe(before);
     restoreWrites();
-    setItem("enlearn.log.v1", before!);
+    setItem("enlearn.log.v2", before!);
   });
 
   /*
@@ -1248,7 +1270,7 @@ describe("저장소 상한·실패 처리 (리뷰 3-9)", () => {
   it("저장소에 형식 밖의 복습 큐 항목이 섞여 있어도 읽기가 살아남는다 (리뷰 4-9)", () => {
     // loadSrs의 normalizeSrs 가드는 저장소를 직접 만졌을 때의 마지막 안전장치다.
     window.localStorage.setItem(
-      "enlearn.srs.v1",
+      "enlearn.srs.v2",
       JSON.stringify([
         null,
         { id: 42, lane: "classic", en: "Numeric id here.", ko: "숫자 id 항목." },

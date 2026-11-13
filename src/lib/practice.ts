@@ -8,7 +8,7 @@
  */
 import type { CorpusLane, ImportResult } from "./types";
 import { localDateString } from "./corpus";
-import { shortHash } from "./corpus-tools";
+import { hash64 } from "./corpus-tools";
 import { safeSetItem, parseStored } from "./storage";
 
 /** 코퍼스 레인 + 코퍼스가 아닌 경로(자유 작성 / AI 생성) */
@@ -21,8 +21,11 @@ export const LANE_SHORT_LABELS: Record<PracticeLane, string> = {
   ai: "AI 생성",
 };
 
-const LOG_KEY = "enlearn.log.v1";
-const SRS_KEY = "enlearn.srs.v1";
+// v2: practiceId가 32비트 shortHash → 64비트 hash64로 바뀌어(D6-5) v1의 id와
+// 맞지 않는다. 결정(resolved.md)대로 마이그레이션은 하지 않는다 — v1 키는
+// 앱이 열릴 때 죽은 키로 지운다(src/lib/corpus.ts LEGACY_KEYS).
+const LOG_KEY = "enlearn.log.v2";
+const SRS_KEY = "enlearn.srs.v2";
 const CHANGE_EVENT = "enlearn:practice-changed";
 
 /**
@@ -34,8 +37,9 @@ const CHANGE_EVENT = "enlearn:practice-changed";
  *    · 번역 캐시 4,000건 ≈ 0.4MB · 복습 큐 500건 ≈ 0.25MB → 합쳐 약 2.3MB.
  *  localStorage 한도(약 5MB) 안에서 세 저장소를 함께 쓰되 여유를 남기는 값이다.
  *  3,000건도 가능하지만(≈1.1MB) 쓸 때마다 통째로 직렬화하는 비용이 커진다.
- *  옛 키(enlearn.seen.v2 · enlearn.kocache.v2)는 앱이 열릴 때 지운다(R7-8) —
- *  위 계산은 "지금 저장소"만 센 값이고, 죽은 키 ≈1.3MB가 예산을 몰래 먹는다.
+ *  옛 키(enlearn.seen.v2 · enlearn.kocache.v2 · enlearn.log.v1 · enlearn.srs.v1)는
+ *  앱이 열릴 때 지운다(R7-8/D6-5) — 위 계산은 "지금 저장소"만 센 값이고,
+ *  죽은 키 ≈1.3MB가 예산을 몰래 먹는다.
  */
 export const MAX_RECORDS = 2_000;
 const MAX_CORRECTIONS = 5;
@@ -212,9 +216,18 @@ export interface PracticeInput {
   anchor?: string;
 }
 
+/**
+ * 연습 기록·복습 큐의 id(D6-5).
+ *
+ * entryKey와 같은 64비트 해시를 쓴다. 32비트면 기록 2,000건 + 큐 500건에서도
+ * 충돌 기대값이 무시할 수 있는 수준이 아니고, 충돌하면 다른 문장의 진행 상태가
+ * 섞인다(logPractice의 id|date 키, gradeReview의 findIndex가 둘을 하나로 다룬다).
+ * ⚠️ entryKey(코퍼스 키)와 별개 이름공간이다 — normalizeKey가 아니라 이 함수의
+ * 정규화를 쓰므로 값을 함부로 합치지 않는다.
+ */
 export function practiceId(lane: PracticeLane, sentence: string): string {
   const key = sentence.trim().toLowerCase().replace(/\s+/g, " ");
-  return `${lane}:${key.length}:${shortHash(key)}`;
+  return `${lane}:${key.length}:${hash64(key)}`;
 }
 
 function isLane(value: unknown): value is PracticeLane {

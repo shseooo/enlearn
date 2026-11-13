@@ -498,14 +498,3 @@ export function hash64(text: string): string {
     fnv32(text, 0x811c9dc5, false) + fnv32(text, 0x01000193 ^ 0x5f356495, true)
   );
 }
-
-/** FNV-1a → 36진 문자열 */
-/** 짧은 32비트 해시 (연습 기록 id(practiceId)로 쓴다 — 항목 수가 적어 충돌 위험이 없다) */
-export function shortHash(text: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(36);
-}

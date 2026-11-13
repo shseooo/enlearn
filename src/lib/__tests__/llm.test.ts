@@ -7,6 +7,7 @@ import {
   evaluateFreeWriting,
   evaluateTranslation,
   generateKoreanExercise,
+  MAX_LLM_INPUT_CHARS,
   sanitizeProviderBody,
   testConnection,
   translateSentenceToKorean,
@@ -984,6 +985,68 @@ describe("askFollowUp", () => {
     expect(content).toContain("이하 생략");
     expect(content).not.toContain("가".repeat(600));
     expect(content).toContain("새 질문");
+  });
+});
+
+/*
+ * D7-1: 상한(1,500자)을 넘는 사용자 입력은 요청을 보내지 않고 한국어 오류를 낸다.
+ * ⚠️ 잘라서 보내지 않는다. 잘린 문장을 평가하면 사용자는 자기 문장 전체가
+ * 평가된 줄 알고, 점수·교정은 잘린 부분에 대해 나온다.
+ */
+describe("사용자 입력 상한 (D7-1)", () => {
+  const okEval = {
+    choices: [{ message: { content: '{"score": 70, "feedback": "좋아요."}' } }],
+  };
+  const over = "a".repeat(MAX_LLM_INPUT_CHARS + 1);
+
+  it("자유 작문이 상한을 넘으면 fetch를 호출하지 않는다", async () => {
+    const m = mockFetchOk(okEval);
+    await expect(evaluateFreeWriting(settings, over)).rejects.toThrow(
+      /1500자까지 평가할 수 있습니다/,
+    );
+    expect(m).not.toHaveBeenCalled();
+  });
+
+  it("번역 연습의 영어 답안이 상한을 넘으면 fetch를 호출하지 않는다", async () => {
+    const m = mockFetchOk(okEval);
+    await expect(
+      evaluateTranslation(settings, "오늘 날씨가 좋습니다.", over),
+    ).rejects.toThrow(/입력이 너무 깁니다/);
+    expect(m).not.toHaveBeenCalled();
+  });
+
+  it("AI 연습 주제가 상한을 넘으면 fetch를 호출하지 않는다", async () => {
+    const m = mockFetchOk({
+      choices: [{ message: { content: '{"sentence": "좋은 문장.", "hints": ["good"]}' } }],
+    });
+    await expect(
+      generateKoreanExercise(settings, "normal", over),
+    ).rejects.toThrow(/입력이 너무 깁니다/);
+    expect(m).not.toHaveBeenCalled();
+  });
+
+  it("추가 질문이 상한을 넘으면 fetch를 호출하지 않는다", async () => {
+    const m = mockFetchOk({ choices: [{ message: { content: "답" } }] });
+    await expect(
+      askFollowUp(
+        settings,
+        { original: "I goed to the park." },
+        { score: 70, feedback: "좋아요.", corrections: [], betterExpression: "" },
+        over,
+      ),
+    ).rejects.toThrow(/입력이 너무 깁니다/);
+    expect(m).not.toHaveBeenCalled();
+  });
+
+  // 상한은 자르는 지점이 아니라 제출 가능 여부의 경계다 — 같은 길이는 통과한다.
+  it("정확히 상한과 같은 길이는 요청한다", async () => {
+    const m = mockFetchOk(okEval);
+    const r = await evaluateFreeWriting(
+      settings,
+      "a".repeat(MAX_LLM_INPUT_CHARS),
+    );
+    expect(r.score).toBe(70);
+    expect(m).toHaveBeenCalledTimes(1);
   });
 });
 

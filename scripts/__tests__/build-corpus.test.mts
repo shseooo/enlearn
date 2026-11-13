@@ -10,6 +10,7 @@ import {
   chatEndpoint,
   describeWriteProblem,
   fetchBytes,
+  readExistingEntries,
   requestChatOnce,
   shouldFlushTranslationCache,
   TRANSLATION_CACHE_FLUSH_BATCHES,
@@ -286,6 +287,140 @@ describe("난이도 배분", () => {
     const picked = balanceByDifficulty(source, 300, 5);
     expect(picked).toHaveLength(300);
     expect(new Set(picked).size).toBe(300);
+  });
+
+  /*
+   * D6-1: seed로 후보 전체를 섞어 자르면 후보가 몇 개 빠져도 수록분이 통째로
+   * 바뀐다(실측: 잡음 8건 제거에 383문장 교체). 이전 수록분을 먼저 고르면
+   * 실제로 바뀐 문장은 그 몇 개뿐이고, 사람 손으로 옮긴 ko도 그대로 남는다.
+   */
+  it("이전에 실린 문장을 먼저 고르고, 후보 하나를 빼면 한 문장만 바뀐다 (D6-1)", () => {
+    const first = balanceByDifficulty(source, 100, 7);
+    const removed = first[0];
+    const second = balanceByDifficulty(
+      source.filter((e) => e !== removed),
+      100,
+      7,
+      { easy: 0.3, normal: 0.45, hard: 0.25 },
+      first,
+    );
+
+    const before = new Set(first.map((e) => e.en));
+    const after = new Set(second.map((e) => e.en));
+    const gone = [...before].filter((en) => !after.has(en));
+    const added = [...after].filter((en) => !before.has(en));
+    expect(second).toHaveLength(100);
+    // 빠지는 것은 후보에서 지운 그 한 문장, 채우는 것은 새 후보 한 문장이다.
+    expect(gone).toEqual([removed.en]);
+    expect(added).toHaveLength(1);
+    expect(source.some((e) => e.en === added[0])).toBe(true);
+  });
+
+  it("필터가 거부한 옛 문장만큼 새 문장이 들어오고 나머지는 그대로다 (D6-1)", () => {
+    const first = balanceByDifficulty(source, 100, 7);
+    // 잡음 8건이 새 필터에 걸려 후보에서 빠진 상황
+    const noise = new Set(first.slice(0, 8).map((e) => e.en));
+    const next = balanceByDifficulty(
+      source.filter((e) => !noise.has(e.en)),
+      100,
+      7,
+      { easy: 0.3, normal: 0.45, hard: 0.25 },
+      first,
+    );
+    const kept = next.filter((e) => !noise.has(e.en));
+    expect(next).toHaveLength(100);
+    expect(kept).toHaveLength(100);
+    // 이전 수록분 92건은 그대로, 새 문장은 8건만 들어온다.
+    expect(next.filter((e) => first.some((p) => p.en === e.en))).toHaveLength(92);
+    expect(next.filter((e) => !first.some((p) => p.en === e.en))).toHaveLength(8);
+  });
+
+  it("이전 사본을 그대로 쓰므로 사람 번역(ko)이 남고, 새 문장은 ko가 비어 있다 (D6-1)", () => {
+    const translated: CorpusEntry[] = source
+      .filter((e) => e.difficulty === "hard")
+      .slice(0, 60)
+      .map((e, i) => ({ ...e, ko: `사람이 옮긴 번역 ${i}번.` }));
+
+    const picked = balanceByDifficulty(
+      source,
+      100,
+      9,
+      { easy: 0.3, normal: 0.45, hard: 0.25 },
+      translated,
+    );
+    expect(picked).toHaveLength(100);
+    expect(picked.filter((e) => e.ko).length).toBe(60);
+    expect(picked.filter((e) => !e.ko).length).toBe(40);
+  });
+
+  // 이전 파일 순서를 그대로 두면 git diff에 "빠진 문장 / 들어온 문장"만 보인다.
+  it("이전 파일 순서를 유지하고 새 문장은 뒤에 붙인다 (D6-1)", () => {
+    const first = balanceByDifficulty(source, 100, 7);
+    const noise = new Set(first.slice(0, 3).map((e) => e.en));
+    const next = balanceByDifficulty(
+      source.filter((e) => !noise.has(e.en)),
+      100,
+      7,
+      { easy: 0.3, normal: 0.45, hard: 0.25 },
+      first,
+    );
+    // 유지한 문장은 이전 파일 순서 그대로 앞에 있고,
+    // 빈자리를 채운 새 문장만 뒤에 붙는다.
+    const carried = first.filter((e) => !noise.has(e.en));
+    expect(next.slice(0, carried.length).map((e) => e.en)).toEqual(
+      carried.map((e) => e.en),
+    );
+    expect(next.slice(carried.length)).toHaveLength(3);
+    expect(
+      next.slice(carried.length).every((e) => !first.some((p) => p.en === e.en)),
+    ).toBe(true);
+  });
+
+  it("난이도 비율은 빈자리를 채울 때 맞춘다 (D6-1)", () => {
+    const previous = source.filter((e) => e.difficulty === "hard").slice(0, 20);
+    const picked = balanceByDifficulty(
+      source,
+      100,
+      4,
+      { easy: 0.3, normal: 0.45, hard: 0.25 },
+      previous,
+    );
+    const count = (d: CorpusEntry["difficulty"]) =>
+      picked.filter((e) => e.difficulty === d).length;
+    expect(picked).toHaveLength(100);
+    // 이미 들어온 hard 20건을 유지하고, 비율(25)까지 5건만 채운다.
+    expect(count("hard")).toBe(25);
+    expect(count("normal")).toBe(45);
+    expect(count("easy")).toBe(30);
+  });
+});
+
+/*
+ * D6-1: 안정 선택은 "지금까지 무엇이 실렸는지"를 읽는 데서 시작한다.
+ * 읽기에 실패하면(파일 없음·깨짐) 안정 선택 없이 예전처럼 고르면 된다.
+ */
+describe("readExistingEntries (D6-1)", () => {
+  it("없으면 null, entries 배열이면 그대로, 깨진 파일은 null", () => {
+    const dir = mkdtempSync(join(tmpdir(), "enlearn-corpus-"));
+    try {
+      expect(readExistingEntries(join(dir, "nope.json"))).toBeNull();
+
+      writeFileSync(
+        join(dir, "ok.json"),
+        JSON.stringify({ entries: [entry("easy", 1)] }),
+      );
+      expect(readExistingEntries(join(dir, "ok.json"))?.map((e) => e.en)).toEqual([
+        "Sentence number 1.",
+      ]);
+
+      writeFileSync(join(dir, "broken.json"), '{ "entries": [ 잘림');
+      expect(readExistingEntries(join(dir, "broken.json"))).toBeNull();
+
+      writeFileSync(join(dir, "noentries.json"), JSON.stringify({ lane: "classic" }));
+      expect(readExistingEntries(join(dir, "noentries.json"))).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

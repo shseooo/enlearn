@@ -14,17 +14,22 @@ const { generateMock, evaluateMock, translateMock, followUpMock } = vi.hoisted((
   followUpMock: vi.fn(),
 }));
 
-vi.mock("@/lib/llm", () => ({
-  generateKoreanExercise: generateMock,
-  evaluateTranslation: evaluateMock,
-  translateSentenceToKorean: translateMock,
-  askFollowUp: (...args: unknown[]) => followUpMock(...args),
-  DIFFICULTY_LABELS: {
-    easy: "쉬움 — 기본 시제",
-    normal: "보통 — 관용 표현",
-    hard: "어려움 — 복잡한 구조",
-  },
-}));
+vi.mock("@/lib/llm", async (importOriginal) => {
+  // 실제 상한(MAX_LLM_INPUT_CHARS)은 두고 호출만 가짜로 바꾼다(D7-1).
+  const actual = await importOriginal<typeof import("@/lib/llm")>();
+  return {
+    ...actual,
+    generateKoreanExercise: generateMock,
+    evaluateTranslation: evaluateMock,
+    translateSentenceToKorean: translateMock,
+    askFollowUp: (...args: unknown[]) => followUpMock(...args),
+    DIFFICULTY_LABELS: {
+      easy: "쉬움 — 기본 시제",
+      normal: "보통 — 관용 표현",
+      hard: "어려움 — 복잡한 구조",
+    },
+  };
+});
 
 const settings = { host: "https://h.ai/v1", model: "m", apiKey: "k" };
 
@@ -141,6 +146,27 @@ describe("TranslationTab — 코퍼스 문장", () => {
     expect(
       screen.queryByText("LLM이 만든 참고 번역"),
     ).not.toBeInTheDocument();
+  });
+
+  // D7-1: 입력을 자르지 않는다 — 상한을 넘으면 제출을 막고 현재 길이를 말한다.
+  it("영어 답안이 상한을 넘으면 제출을 막고 평가 가능한 길이를 말한다 (D7-1)", async () => {
+    prefillCorpus("daily", dailyFile);
+    render(<TranslationTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /문장 받기/ }));
+    await screen.findByText("톰은 많이 아파 보여.");
+
+    const box = screen.getByLabelText(/내 영어 번역/) as HTMLTextAreaElement;
+    await user.click(box);
+    await user.paste("a".repeat(2_000));
+
+    expect(box.value).toHaveLength(2_000); // 잘리지 않는다
+    expect(screen.getByRole("button", { name: /점수 받기/ })).toBeDisabled();
+    expect(
+      screen.getByText(/자까지 평가할 수 있습니다\(현재 2000자\)/),
+    ).toBeInTheDocument();
+    expect(evaluateMock).not.toHaveBeenCalled();
   });
 
   it("평가 중에는 문장을 다시 받을 수 없다 (늦은 응답이 새 문장 위에 얹히는 것 방지)", async () => {
@@ -644,7 +670,7 @@ describe("TranslationTab — 연습 기록 연동", () => {
     await user.click(screen.getByRole("button", { name: /점수 받기/ }));
     await screen.findByText("Tom looks very sick.");
 
-    const log = JSON.parse(window.localStorage.getItem("enlearn.log.v1") ?? "[]");
+    const log = JSON.parse(window.localStorage.getItem("enlearn.log.v2") ?? "[]");
     expect(log).toHaveLength(1);
     expect(log[0]).toMatchObject({
       lane: "daily",
@@ -655,7 +681,7 @@ describe("TranslationTab — 연습 기록 연동", () => {
     expect(log[0].corrections[0].original).toBe("looked");
 
     // 코퍼스 문장은 1일 뒤 복습으로 돌아온다
-    const queue = JSON.parse(window.localStorage.getItem("enlearn.srs.v1") ?? "[]");
+    const queue = JSON.parse(window.localStorage.getItem("enlearn.srs.v2") ?? "[]");
     expect(queue).toHaveLength(1);
     expect(queue[0].ko).toBe("톰은 많이 아파 보여.");
     expect(queue[0].due).toBe(addDays(localDateString(), 1));
@@ -679,7 +705,7 @@ describe("TranslationTab — 연습 기록 연동", () => {
     await screen.findByRole("button", { name: /취소/ });
     await user.click(screen.getByRole("button", { name: /취소/ }));
 
-    expect(window.localStorage.getItem("enlearn.log.v1")).toBeNull();
+    expect(window.localStorage.getItem("enlearn.log.v2")).toBeNull();
   });
 });
 
@@ -764,7 +790,7 @@ describe("TranslationTab — AI 생성 기록 id (리뷰 3-10)", () => {
     await user.click(screen.getByRole("button", { name: /점수 받기/ }));
     await screen.findByText("두 번째 평가");
 
-    const log = JSON.parse(window.localStorage.getItem("enlearn.log.v1") ?? "[]");
+    const log = JSON.parse(window.localStorage.getItem("enlearn.log.v2") ?? "[]");
     expect(log).toHaveLength(1);
     expect(log[0].score).toBe(85);
     expect(log[0].lane).toBe("ai");

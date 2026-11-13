@@ -810,7 +810,7 @@ async function downloadAll(): Promise<void> {
   }
 }
 
-/** 난이도 비율을 맞춰 남은 문장을 고른다. */function shuffleWithSeed<T>(list: T[], seed: number): T[] {
+function shuffleWithSeed<T>(list: T[], seed: number): T[] {
   let a = seed >>> 0;
   const rand = () => {
     a = (a + 0x6d2b79f5) >>> 0;
@@ -833,29 +833,69 @@ const RATIO: Record<string, number> = {
   hard: 0.25,
 };
 
+/**
+ * 난이도 비율을 맞춰 cap개만 고른다.
+ *
+ * ⚠️ D6-1: `previous`(지금까지 실렸던 문장)를 주면, 그 문장 가운데 지금 필터를
+ * 통과하는 것을 **먼저** 고르고 빈자리만 seed 순서의 새 후보로 채운다.
+ * 후보 전체를 seed로 섞어 자르면 후보가 몇 개 빠져도 수록분이 통째로 바뀐다
+ * (실측: 잡음 8건 필터링에 383문장이 교체됐다). 사람 손으로 옮긴 ko는 이전 사본에만
+ * 있으니, 유지하는 항목은 이전 객체를 그대로 쓴다.
+ */
 export function balanceByDifficulty(
   entries: CorpusEntry[],
   cap: number,
   seed: number,
   ratio: Record<string, number> = RATIO,
+  previous: CorpusEntry[] = [],
 ): CorpusEntry[] {
-  if (entries.length <= cap) return entries;
+  // 이전에 실린 문장은 이전 사본으로 되살린다(en 대조 — 같은 원문에서 만든 값이다).
+  // 이전 파일 순서를 그대로 쓰므로 git diff에 "빠진 문장/들어온 문장"만 보인다.
+  const candidateByEn = new Map<string, CorpusEntry>();
+  for (const e of entries) {
+    if (!candidateByEn.has(e.en)) candidateByEn.set(e.en, e);
+  }
+  const keep: CorpusEntry[] = [];
+  const keptEn = new Set<string>();
+  for (const prev of previous) {
+    if (keptEn.has(prev.en) || !candidateByEn.has(prev.en)) continue;
+    keep.push(prev);
+    keptEn.add(prev.en);
+  }
+  // 필터를 통과한 후보 가운데 이미 유지하기로 한 것
+  const keptCandidates = new Set<CorpusEntry>();
+  for (const e of entries) {
+    if (keptEn.has(e.en)) keptCandidates.add(e);
+  }
+  if (entries.length <= cap) {
+    // 자리가 남으면 새 후보도 모두 담는다(예전 문장은 ko가 남은 이전 사본으로).
+    return [...keep, ...entries.filter((e) => !keptCandidates.has(e))];
+  }
+  if (keep.length >= cap) {
+    // 이전 수록분이 cap을 넘치는 경우(예: cap을 낮춘 뒤 첫 빌드)엔 cap개만 유지한다.
+    return keep.slice(0, cap);
+  }
   const want: Record<string, number> = {
     easy: Math.round(cap * (ratio.easy ?? 0)),
     normal: Math.round(cap * (ratio.normal ?? 0)),
     hard: Math.round(cap * (ratio.hard ?? 0)),
   };
+  const keptCount: Record<string, number> = { easy: 0, normal: 0, hard: 0 };
+  for (const e of keep) keptCount[e.difficulty] += 1;
+  // 새 후보는 빈자리를 채울 때만 섞는다. 난이도 비율은 "빈자리" 기준으로 맞춘다.
+  const rest = entries.filter((e) => !keptCandidates.has(e));
   const pools = {
-    easy: shuffleWithSeed(entries.filter((e) => e.difficulty === "easy"), seed),
-    normal: shuffleWithSeed(entries.filter((e) => e.difficulty === "normal"), seed + 1),
-    hard: shuffleWithSeed(entries.filter((e) => e.difficulty === "hard"), seed + 2),
+    easy: shuffleWithSeed(rest.filter((e) => e.difficulty === "easy"), seed),
+    normal: shuffleWithSeed(rest.filter((e) => e.difficulty === "normal"), seed + 1),
+    hard: shuffleWithSeed(rest.filter((e) => e.difficulty === "hard"), seed + 2),
   };
-  const picked: CorpusEntry[] = [];
+  const picked: CorpusEntry[] = [...keep];
   // 모자란 수를 채울 때 picked.includes()는 선택 개수만큼 선형 검색이었다(리뷰 2-10).
   const pickedSet = new Set<CorpusEntry>();
-  let left = cap;
+  let left = cap - keep.length;
   for (const key of ["hard", "normal", "easy"] as const) {
-    const take = Math.min(want[key], pools[key].length, left);
+    const need = Math.max(0, want[key] - keptCount[key]);
+    const take = Math.min(need, pools[key].length, left);
     const taken = pools[key].slice(0, take);
     picked.push(...taken);
     for (const e of taken) pickedSet.add(e);
@@ -863,11 +903,11 @@ export function balanceByDifficulty(
   }
   // 모자란 수는 남은 풀에서 채운다
   if (left > 0) {
-    const rest = shuffleWithSeed(
-      entries.filter((e) => !pickedSet.has(e)),
+    const remain = shuffleWithSeed(
+      rest.filter((e) => !pickedSet.has(e)),
       seed + 3,
     );
-    picked.push(...rest.slice(0, left));
+    picked.push(...remain.slice(0, left));
   }
   return picked;
 }
@@ -908,15 +948,22 @@ function applyDifficultyAndHints(
  */
 export const MIN_RETAIN_RATIO = 0.5;
 
-/** 기존 파일의 entries 개수. 파일이 없거나 형식이 깨졌으면 null. */
-function existingEntryCount(path: string): number | null {
+/** 기존 코퍼스 파일의 entries. 파일이 없거나 형식이 깨졌으면 null. */
+export function readExistingEntries(path: string): CorpusEntry[] | null {
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as { entries?: unknown };
-    return Array.isArray(parsed.entries) ? parsed.entries.length : null;
+    return Array.isArray(parsed.entries)
+      ? (parsed.entries as CorpusEntry[])
+      : null;
   } catch {
     return null;
   }
+}
+
+/** 기존 파일의 entries 개수. 파일이 없거나 형식이 깨졌으면 null. */
+function existingEntryCount(path: string): number | null {
+  return readExistingEntries(path)?.length ?? null;
 }
 
 /**
@@ -959,12 +1006,27 @@ async function main(): Promise<void> {
   applyDifficultyAndHints(classic, 0.3, 0.3);
 
   const dailyEntries = balanceByDifficulty(daily.entries, DAILY_CAP, 20260101);
+  // D6-1: 동화는 이미 실린 문장을 먼저 고른다. 후보가 몇 개 빠져도 수록분이
+  // 통째로 뒤집히지 않고, 사람 손으로 옮긴 한국어가 그대로 남는다.
+  // (일상 회화에는 사람 번역이 없고 토에바 후보 순서가 정해져 있어 적용하지 않는다.)
+  const classicsPath = join(OUT_DIR, "classics.json");
+  const previousClassic = LANES.includes("classic")
+    ? (readExistingEntries(classicsPath) ?? [])
+    : [];
   const classicEntries = balanceByDifficulty(
     classic,
     CLASSIC_CAP,
     20260102,
     { easy: 0.3, normal: 0.4, hard: 0.3 },
+    previousClassic,
   );
+  if (previousClassic.length > 0) {
+    const previousSet = new Set(previousClassic);
+    const carried = classicEntries.filter((e) => previousSet.has(e)).length;
+    console.log(
+      `  이전 코퍼스에서 유지 ${carried}문장 · 새로 들어온 문장 ${classicEntries.length - carried}문장 (이전 수록 ${previousClassic.length}문장)`,
+    );
+  }
   if (daily.entries.length)
     console.log(`  (필터 통과 전체 ${daily.entries.length}: ${summarize(daily.entries)})`);
 
@@ -1013,7 +1075,7 @@ async function main(): Promise<void> {
   if (LANES.includes("classic")) {
     writes.push({
       lane: "classic",
-      path: join(OUT_DIR, "classics.json"),
+      path: classicsPath,
       body: JSON.stringify(classicFile),
       count: classicEntries.length,
     });

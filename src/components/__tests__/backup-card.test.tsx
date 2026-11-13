@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import BackupCard from "../backup-card";
 import StorageWarning from "../storage-warning";
-import { loadLog, logPractice, MAX_RECORDS } from "@/lib/practice";
+import { loadLog, logPractice, MAX_RECORDS, reviewItems } from "@/lib/practice";
 import { cacheKorean, getCachedKorean, markSeen, seenCount } from "@/lib/corpus";
 import { saveSettings } from "@/lib/settings";
 import { BACKUP_APP, buildBackup } from "@/lib/backup";
@@ -177,6 +177,66 @@ describe("BackupCard", () => {
   });
 
   /*
+   * D8-1: 백업 파일에 없는 섹션은 "0개로 대체"가 아니라 "그대로 남음"이다.
+   * 확인 창과 결과 문구가 그 사실을 말하고, 저장소도 그대로 남아야 한다.
+   */
+  it("백업에 없는 섹션은 그대로 남고, 확인 창과 결과 문구가 그 사실을 말해준다 (D8-1)", async () => {
+    logPractice({
+      lane: "classic",
+      en: "Record that must survive a partial backup.",
+      ko: "부분 백업으로 살아남는 기록.",
+      answer: "keep",
+      score: 60,
+      corrections: [],
+    });
+    markSeen("classic:keep:seen");
+    cacheKorean("classic:keep:ko", "살아남는 번역.", ["keep"]);
+
+    const partial = JSON.stringify({
+      app: BACKUP_APP,
+      version: 1,
+      exportedAt: "2026-01-02T00:00:00.000Z",
+      counts: { log: 0, srs: 1, seen: 0, koreanCache: 0 },
+      data: {
+        // log·seen·koreanCache 섹션 자체가 없는 파일
+        srs: [
+          {
+            id: "classic:partial",
+            lane: "classic",
+            en: "Queue entry from a partial backup.",
+            ko: "부분 백업의 큐 항목.",
+            stage: 1,
+            due: "2099-01-01",
+            lapses: 0,
+            lastReviewed: null,
+          },
+        ],
+      },
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<BackupCard />);
+    const user = userEvent.setup();
+    await user.upload(screen.getByLabelText(/백업 가져오기/), fileOf(partial));
+    await user.click(screen.getByRole("button", { name: /기존 기록을 지우고 대체/ }));
+
+    const asked = String(confirmSpy.mock.calls[0]?.[0] ?? "");
+    expect(asked).toMatch(/이 백업에 없는 섹션/);
+    expect(asked).toMatch(/그대로 남습니다/);
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent(/이 백업에 없는 섹션: 연습 기록·받은 문장 기록·번역 캐시 \(그대로 남음\)/);
+    // 실제로도 남아 있다.
+    expect(loadLog().map((r) => r.en)).toContain(
+      "Record that must survive a partial backup.",
+    );
+    expect(seenCount()).toBe(1);
+    expect(getCachedKorean("classic:keep:ko")?.ko).toBe("살아남는 번역.");
+    // 적혀 있던 섹션(srs)은 대체된다.
+    expect(reviewItems().map((x) => x.id)).toEqual(["classic:partial"]);
+  });
+
+  /*
    * R8-6: 번역 캐시에는 시각 비교가 없다(기존 값 우선 — D2-1). "더 최근 기록이 있어
    * 적용되지 않음"은 사용자에게 "내 백업이 옛것이어서 거부됐다"는 거짓 설명이고,
    * 실제로는 어떤 번역도 백업의 것으로 바꿀 수 없다는 사실을 감춘다.
@@ -216,6 +276,11 @@ describe("BackupCard", () => {
     const status = await screen.findByRole("status");
     expect(status).toHaveTextContent(/1건은 이미 저장된 값이 있어 적용되지 않음/);
     expect(status.textContent).not.toMatch(/더 최근/);
+    // D8-2: 카드의 정적 안내도 번역 캐시에 거짓말하지 않도록 나뉘었다.
+    expect(
+      screen.getByText(/이미 번역된 문장의 번역은 백업으로 바뀌지 않습니다/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/합치기는 연습 기록·복습 큐·받은 문장에서 더 최근 기록/)).toBeInTheDocument();
     // 실제로는 기존 번역이 그대로 남는다 — 백업의 번역은 어디로도 반영되지 않는다.
     expect(getCachedKorean("classic:overlap:key")?.ko).toBe("화면에 이미 있는 번역.");
   });

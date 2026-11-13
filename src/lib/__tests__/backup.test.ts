@@ -8,6 +8,7 @@ import {
   downloadBackup,
   parseBackup,
   restoreBackup,
+  type RawBackupFile,
 } from "../backup";
 import {
   addForReview,
@@ -267,6 +268,8 @@ describe("백업 복원", () => {
       // R7-1: 합치기에서 밀린 항목 수. 위 항목은 모두 새로 들어왔으므로 0이다.
       merged: { log: 0, srs: 0, seen: 0, koreanCache: 0 },
       settingsRestored: false,
+      // D8-1: 파일에 네 섹션이 모두 있으니 손대지 않은 저장소는 없다.
+      omitted: [],
       writeFailed: false,
     });
     expect(loadLog()).toHaveLength(2);
@@ -406,7 +409,7 @@ describe("백업 복원", () => {
     expect(loadLog()).toHaveLength(2);
   });
 
-  it("빈 파일 내용으로 대체하면 모든 기록이 사라진다", () => {
+  it("빈 파일 내용으로 대체하면 파일에 적힌 섹션(log·srs)은 사라진다", () => {
     seed();
     const file = parseBackup(
       JSON.stringify({ app: BACKUP_APP, version: 1, data: { log: [], srs: [] } }),
@@ -414,10 +417,65 @@ describe("백업 복원", () => {
     restoreBackup(file, true);
     expect(loadLog()).toHaveLength(0);
     expect(reviewItems()).toHaveLength(0);
-    expect(exportSeen()).toEqual({});
     expect(practiceStats().total).toBe(0);
-    expect(koreanCacheCount()).toBe(0);
     expect(dueCount(new Date("2099-01-01T12:00:00"))).toBe(0);
+    // 파일에 빈 값으로라도 적힌 섹션이 아니라면(D8-1) 본 문장·번역 캐시는 남는다.
+    expect(exportSeen()["daily:11:abc"]).toBeTruthy();
+    expect(koreanCacheCount()).toBe(1);
+  });
+
+  /*
+   * D8-1: "없는 섹션"과 "빈 섹션"은 다르다. 옛 파일·부분 백업으로 대체해도
+   * 파일에 없는 저장소는 그대로 남아야 한다("0개로 대체"와 다른 판단이다).
+   */
+  it("대체는 파일에 있는 섹션만 지우고, 없는 섹션은 그대로 남긴다 (D8-1)", () => {
+    seed();
+    const beforeLog = loadLog().length;
+    const beforeSeen = exportSeen();
+    const beforeKorean = exportKoreanCache();
+    expect(beforeLog).toBe(2);
+    expect(Object.keys(beforeSeen)).toEqual(["daily:11:abc"]);
+    expect(koreanCacheCount()).toBe(1);
+
+    const file = parseBackup(
+      JSON.stringify({
+        app: BACKUP_APP,
+        version: 1,
+        data: {
+          srs: [
+            {
+              id: "classic:s1",
+              lane: "classic",
+              en: "Only the queue section is in this file.",
+              ko: "복습 큐 섹션만 있는 백업.",
+              stage: 1,
+              due: "2099-01-01",
+              lapses: 0,
+              lastReviewed: null,
+            },
+          ],
+        },
+      }),
+    );
+    expect(file.present).toEqual({
+      log: false,
+      srs: true,
+      seen: false,
+      koreanCache: false,
+    });
+    // counts는 0으로 보이지만 "0개로 대체"가 아니다 — present가 구분한다.
+    expect(file.counts.seen).toBe(0);
+
+    const result = restoreBackup(file, true);
+    expect(result.omitted).toEqual(["log", "seen", "koreanCache"]);
+    // srs만 적혀 있었으므로 srs만 대체된다.
+    expect(reviewItems().map((x) => x.id)).toEqual(["classic:s1"]);
+    expect(loadLog()).toHaveLength(beforeLog);
+    expect(exportSeen()).toEqual(beforeSeen);
+    expect(exportKoreanCache()).toEqual(beforeKorean);
+
+    // 합치기는 없는 섹션이 "바꿀 것 없음"과 같으므로 omitted가 비어 있다.
+    expect(restoreBackup(file, false).omitted).toEqual([]);
   });
 });
 
@@ -587,7 +645,11 @@ describe("백업 파일 손상 대응", () => {
 
 describe("restoreBackup — 알림 묶음 (리뷰 3-10)", () => {
   it("저장소마다 알림이 한 번만 나간다", () => {
-    const file = buildBackup(false);
+    // parseBackup을 거치지 않고 만들어 넘기는 테스트라 섹션 존재 여부를 직접 적는다.
+    const file: RawBackupFile = {
+      ...buildBackup(false),
+      present: { log: true, srs: true, seen: true, koreanCache: true },
+    };
     file.data.log = [
       {
         id: "classic:b1",

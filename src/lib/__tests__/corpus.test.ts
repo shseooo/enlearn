@@ -1001,6 +1001,22 @@ describe("죽은 옛 키 정리 (R7-8)", () => {
     expect(koreanCacheCount()).toBe(1);
   });
 
+  // D6-5: practiceId가 64비트로 올라가면서 v1 연습 기록·복습 큐 키도 죽은 키가 됐다.
+  it("v1 연습 기록·복습 큐 키도 지운다 (D6-5)", () => {
+    window.localStorage.setItem(
+      "enlearn.log.v1",
+      JSON.stringify([{ id: "classic:31:1a2b3c4d", date: "2025-01-01" }]),
+    );
+    window.localStorage.setItem("enlearn.srs.v1", JSON.stringify([]));
+    markSeen("classic:current:k");
+
+    clearLegacyStorageKeys();
+
+    expect(window.localStorage.getItem("enlearn.log.v1")).toBeNull();
+    expect(window.localStorage.getItem("enlearn.srs.v1")).toBeNull();
+    expect(seenCount()).toBe(1);
+  });
+
   it("삭제가 실패해도 멈추지 않는다 — 화면 기능과 무관한 청소다", () => {
     window.localStorage.setItem("enlearn.seen.v2", "{}");
     vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {

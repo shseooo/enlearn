@@ -6,10 +6,16 @@ import type { LLMSettings } from "@/lib/types";
 
 const { evaluateMock } = vi.hoisted(() => ({ evaluateMock: vi.fn() }));
 
-vi.mock("@/lib/llm", () => ({
-  evaluateFreeWriting: evaluateMock,
-  askFollowUp: vi.fn(),
-}));
+// 실제 상한(MAX_LLM_INPUT_CHARS)은 두고 호출만 가짜로 바꾼다 — 화면이 쓰는
+// 값과 테스트가 보는 값이 어긋나면 안 된다(D7-1).
+vi.mock("@/lib/llm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/llm")>();
+  return {
+    ...actual,
+    evaluateFreeWriting: evaluateMock,
+    askFollowUp: vi.fn(),
+  };
+});
 
 const settings: LLMSettings = {
   host: "https://h.ai/v1",
@@ -45,6 +51,25 @@ describe("FreeWritingTab", () => {
 
     expect(screen.getByRole("button", { name: "점수 받기" })).toBeDisabled();
     expect(screen.getByText(/LLM 설정이 아직 완성되지 않았어요/)).toBeInTheDocument();
+  });
+
+  // D7-1: 입력을 자르지 않는다 — 상한을 넘으면 제출을 막고 현재 길이를 말한다.
+  it("입력이 상한을 넘으면 제출을 막고 평가 가능한 길이를 말한다 (D7-1)", async () => {
+    render(<FreeWritingTab settings={settings} onGoSettings={() => {}} />);
+    const user = userEvent.setup();
+    const box = screen.getByLabelText(
+      "영문으로 문장을 작성해보세요",
+    ) as HTMLTextAreaElement;
+
+    await user.click(box);
+    await user.paste("a".repeat(2_000));
+
+    expect(box.value).toHaveLength(2_000); // 잘리지 않는다
+    expect(screen.getByRole("button", { name: "점수 받기" })).toBeDisabled();
+    expect(
+      screen.getByText(/자까지 평가할 수 있습니다\(현재 2000자\)/),
+    ).toBeInTheDocument();
+    expect(evaluateMock).not.toHaveBeenCalled();
   });
 
   it("문장을 평가하면 취소 가능한 signal과 함께 요청하고 결과를 보여준다", async () => {

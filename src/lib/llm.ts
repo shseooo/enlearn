@@ -497,12 +497,34 @@ function translationSystemPrompt(): string {
   ]);
 }
 
+/**
+ * 사용자 입력 상한(D7-1).
+ *
+ * ⚠️ 저장소의 clip(400자, src/lib/practice.ts)과 일부러 다르게 둔다.
+ *  - clip(400): 브라우저 저장소를 보호한다(기록 2,000건이 5MB를 넘지 않게).
+ *  - 이 값(1,500): LLM 요청 비용·토큰을 보호한다. 저장은 400자로 잘리지만
+ *    평가는 화면에 적힌 전체 문장을 보내야 의미가 있으므로 상한이 더 넓다.
+ * 상한을 넘는 입력은 요청을 보내지 않고 오류를 낸다 — 자르면 사용자는 자기
+ * 문장 전체가 평가된 줄 안다(점수·교정이 잘린 부분에 대해 나온다).
+ */
+export const MAX_LLM_INPUT_CHARS = 1_500;
+
+/** 상한을 넘는 사용자 입력은 호출 전에 거부한다(자르거나 잘라 보내지 않는다). */
+function assertInputLimit(text: string, limit = MAX_LLM_INPUT_CHARS): void {
+  if (text.length > limit) {
+    throw new Error(
+      `입력이 너무 깁니다(${text.length}자). ${limit}자까지 평가할 수 있습니다.`,
+    );
+  }
+}
+
 /** 자유 작성: 영어 문장을 평가한다. */
 export async function evaluateFreeWriting(
   settings: LLMSettings,
   sentence: string,
   options: ChatOptions = {},
 ): Promise<EvaluationResult> {
+  assertInputLimit(sentence);
   const raw = await requestAssistantText(
     settings,
     [
@@ -526,6 +548,8 @@ export async function evaluateTranslation(
   options: ChatOptions = {},
 ): Promise<EvaluationResult> {
   const ref = reference?.trim() ?? "";
+  assertInputLimit(english);
+  assertInputLimit(korean);
   const userContent = [
     `원문 (한국어):\n"""${korean}"""`,
     `사용자의 영어 번역:\n"""${english}"""`,
@@ -566,6 +590,7 @@ export async function generateKoreanExercise(
   options: ChatOptions = {},
 ): Promise<KoreanExercise> {
   const trimmedTopic = topic?.trim() ?? "";
+  assertInputLimit(trimmedTopic);
   const raw = await requestAssistantText(
     settings,
     [
@@ -649,6 +674,7 @@ export async function askFollowUp(
   history: FollowUpTurn[] = [],
   options: ChatOptions = {},
 ): Promise<string> {
+  assertInputLimit(question);
   const contextLines: string[] = [];
   if (context.original) contextLines.push(`사용자 원문: """${context.original}"""`);
   if (context.answer) contextLines.push(`사용자의 영어 답안: """${context.answer}"""`);

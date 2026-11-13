@@ -25,6 +25,7 @@ import { loadSettings, saveSettings } from "./settings";
 import { checkHost, hostWarning } from "./llm";
 import { localDateString } from "./corpus";
 import { writeFailureCount } from "./storage";
+import type { ImportResult } from "./types";
 import type { PracticeRecord, SrsItem } from "./practice";
 import type { CachedKorean } from "./corpus";
 
@@ -36,6 +37,23 @@ export interface BackupCounts {
   srs: number;
   seen: number;
   koreanCache: number;
+}
+
+/** 백업의 네 섹션 이름 */
+export type BackupSection = "log" | "srs" | "seen" | "koreanCache";
+
+/**
+ * 파일에 그 섹션이 실제로 적혀 있었는지(D8-1).
+ *
+ * ⚠️ "없음"과 "빈 값"은 다르다. 옛·부분 백업은 섹션 자체를 생략하므로, 그것을
+ * 빈 값으로 채워서 대체하면 사용자는 의도하지 않은 저장소까지 잃는다.
+ * 없는 섹션은 대체 대상에서 빼고 화면에 그대로 알린다.
+ */
+export interface BackupSections {
+  log: boolean;
+  srs: boolean;
+  seen: boolean;
+  koreanCache: boolean;
 }
 
 /**
@@ -57,6 +75,8 @@ export interface RawBackupFile {
   version: number;
   exportedAt: string;
   counts: BackupCounts;
+  /** 파일에 적혀 있던 섹션(D8-1). 없는 섹션의 counts는 0이지만 "0개로 대체"가 아니다. */
+  present: BackupSections;
   data: RawBackupData;
 }
 
@@ -173,6 +193,14 @@ export function parseBackup(text: string): RawBackupFile {
   if (!Array.isArray(d.log) && !Array.isArray(d.srs)) {
     throw new Error("백업에 연습 기록(log)도 복습 큐(srs)도 없습니다.");
   }
+  // ⚠️ 없는 섹션을 빈 값으로 채우지 않고 "없음"을 구분해 둔다(D8-1). data에는 여전히
+  //  빈 값(미리보기·합치기용)을 넣지만, 대체는 present가 참인 섹션만 한다.
+  const present: BackupSections = {
+    log: Array.isArray(d.log),
+    srs: Array.isArray(d.srs),
+    seen: isRecord(d.seen),
+    koreanCache: isRecord(d.koreanCache),
+  };
   const payload: RawBackupData = {
     log: Array.isArray(d.log) ? d.log : [],
     srs: Array.isArray(d.srs) ? d.srs : [],
@@ -208,6 +236,7 @@ export function parseBackup(text: string): RawBackupFile {
     exportedAt: typeof o.exportedAt === "string" ? o.exportedAt : "",
     // 파일에 적힌 counts는 위조·손상될 수 있으므로 실제 내용으로 다시 센다
     counts: countsOf(payload),
+    present,
     data: payload,
   };
 }
@@ -226,6 +255,11 @@ export interface RestoreResult {
   merged: BackupCounts;
   settingsRestored: boolean;
   /**
+   * 백업 파일에 적혀 있지 않아 손대지 않고 남긴 저장소(D8-1).
+   * 대체(replace)에서만 의미가 있다 — 합치기는 빈 섹션이 "바꿀 것 없음"과 같다.
+   */
+  omitted: BackupSection[];
+  /**
    * 반영 중에 저장이 실패한 저장소가 있다(용량 초과 등). 이 경우 위의 개수는
    * "바뀌지 않은 이전 값"일 수 있으므로 성공 문구를 쓰면 안 된다(리뷰 2-4).
    */
@@ -235,7 +269,8 @@ export interface RestoreResult {
 /** 백업 내용을 저장소에 반영한다. replace=true면 기존 기록을 지우고 채운다. */
 /**
  * 백업 내용을 저장소에 반영한다.
- * replace=true면 기존 기록을 지우고 채운다.
+ * replace=true면 백업 파일에 적혀 있던 섹션만 기존 값 대신 채운다(D8-1) —
+ * 파일에 없는 섹션의 저장소는 그대로 남고, 결과의 omitted로 알려준다.
  * ⚠️ restoreSettings는 기본 false — 연결 설정을 되돌리면 **다음 LLM 호출의 대상**이
  * 바뀌고 API 키가 그 도메인으로 간다. 별도 확인을 거쳐서만 반영한다.
  */
@@ -249,16 +284,25 @@ export function restoreBackup(
   // import*의 개수 반환은 저장이 실패해도 "이전 값"을 세어 성공처럼 보인다.
   // 그래서 safeSetItem이 센 실패 횟수를 함께 확인한다(리뷰 2-4).
   const failuresBefore = writeFailureCount();
+  // 파일에 없는 섹션은 대체하지 않는다(D8-1). "0개로 대체"와 "그대로 남음"은 다르다.
+  const omitted = (Object.keys(file.present) as BackupSection[]).filter(
+    (name) => replace && !file.present[name],
+  );
+  const skipped: ImportResult = { stored: 0, rejected: 0, trimmed: 0, merged: 0 };
   const imported = batchProgress(() =>
     batchPractice(() => {
       // ⚠️ 대체 경로에서 clearKoreanCache()를 먼저 부르지 않는다(R6-16):
       // 아래 importKoreanCache(replace=true)가 같은 키를 무조건 덮어써 같은 값을
       // 두 번 쓰는 셈이었고, 앞의 쓰기가 실패하면 지운 캐시만 되돌려지지 않았다.
       return {
-        log: importLog(file.data.log, replace),
-        srs: importSrs(file.data.srs, replace),
-        seen: importSeen(file.data.seen, replace),
-        koreanCache: importKoreanCache(file.data.koreanCache, replace),
+        log: omitted.includes("log") ? skipped : importLog(file.data.log, replace),
+        srs: omitted.includes("srs") ? skipped : importSrs(file.data.srs, replace),
+        seen: omitted.includes("seen")
+          ? skipped
+          : importSeen(file.data.seen, replace),
+        koreanCache: omitted.includes("koreanCache")
+          ? skipped
+          : importKoreanCache(file.data.koreanCache, replace),
       };
     }),
   );
@@ -286,6 +330,7 @@ export function restoreBackup(
       koreanCache: imported.koreanCache.merged,
     },
     settingsRestored: false,
+    omitted,
     writeFailed: false,
   };
   if (restoreSettings && file.data.settings) {
